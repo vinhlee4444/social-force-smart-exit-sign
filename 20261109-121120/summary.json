@@ -1,0 +1,134 @@
+{
+  "n_agents": 300,
+  "evacuated": 300,
+  "sim_time_s": 116.25,
+  "all_evacuated": true,
+  "T50_s": 43.050000000000004,
+  "T90_s": 108.0,
+  "T100_s": 116.24000000000001,
+  "peak_contact_force_N": 12940.6,
+  "gates_enabled": true,
+  "seed": 0,
+  "exits": [
+    {
+      "name": "E1 top-left",
+      "evacuated": 50,
+      "closures": 1,
+      "total_closed_s": 21.2,
+      "max_count": 30,
+      "visible_area_m2": 213.8,
+      "events": [
+        {
+          "t": 10.2,
+          "state": "CLOSED",
+          "count": 27
+        },
+        {
+          "t": 31.4,
+          "state": "OPEN",
+          "count": 15
+        }
+      ]
+    },
+    {
+      "name": "E2 top-right",
+      "evacuated": 125,
+      "closures": 1,
+      "total_closed_s": 28.1,
+      "max_count": 33,
+      "visible_area_m2": 180.4,
+      "events": [
+        {
+          "t": 46.0,
+          "state": "CLOSED",
+          "count": 26
+        },
+        {
+          "t": 74.1,
+          "state": "OPEN",
+          "count": 15
+        }
+      ]
+    },
+    {
+      "name": "E3 bottom-left",
+      "evacuated": 95,
+      "closures": 1,
+      "total_closed_s": 13.4,
+      "max_count": 38,
+      "visible_area_m2": 219.1,
+      "events": [
+        {
+          "t": 8.1,
+          "state": "CLOSED",
+          "count": 26
+        },
+        {
+          "t": 21.5,
+          "state": "OPEN",
+          "count": 15
+        }
+      ]
+    },
+    {
+      "name": "E4 bottom-right",
+      "evacuated": 30,
+      "closures": 5,
+      "total_closed_s": 59.5,
+      "max_count": 44,
+      "visible_area_m2": 185.1,
+      "events": [
+        {
+          "t": 21.5,
+          "state": "CLOSED",
+          "count": 26
+        },
+        {
+          "t": 32.9,
+          "state": "OPEN",
+          "count": 15
+        },
+        {
+          "t": 35.8,
+          "state": "CLOSED",
+          "count": 26
+        },
+        {
+          "t": 45.8,
+          "state": "OPEN",
+          "count": 0
+        },
+        {
+          "t": 56.2,
+          "state": "CLOSED",
+          "count": 27
+        },
+        {
+          "t": 66.7,
+          "state": "OPEN",
+          "count": 15
+        },
+        {
+          "t": 69.7,
+          "state": "CLOSED",
+          "count": 26
+        },
+        {
+          "t": 87.3,
+          "state": "OPEN",
+          "count": 15
+        },
+        {
+          "t": 91.1,
+          "state": "CLOSED",
+          "count": 27
+        },
+        {
+          "t": 101.1,
+          "state": "OPEN",
+          "count": 0
+        }
+      ]
+    }
+  ]
+}
