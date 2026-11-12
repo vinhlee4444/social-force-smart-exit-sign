@@ -38,47 +38,32 @@ class GateEvent:
 class GateController:
     """Pure logic, no geometry: easy to unit-test.
 
-        OPEN    --(value > close_above, open >= min_open_time, allowed)--> CLOSING (warning)
-        CLOSING --(warning over, still crowded and allowed)-------------> CLOSED
-        CLOSING --(warning over, crowd gone or not allowed)-------------> OPEN   (cancelled)
-        CLOSED  --(closed >= min_closed_time AND value <= reopen_at_most)--> OPEN
-        CLOSED  --(closed >= max_closed_time)---------------------------> OPEN   (fail-safe)
+        OPEN   --(value > close_above, open >= min_open_time)-----------> CLOSED
+        CLOSED --(closed >= min_closed_time AND value <= reopen_at_most)-> OPEN
+        CLOSED --(closed >= max_closed_time)-----------------------------> OPEN   (fail-safe)
 
-    `close_warning_time = 0` closes at once; `min_open_time = 0` and `max_closed_time = inf`
-    switch the two extra safeguards off (the original two-state behaviour).
+    `min_open_time = 0` and `max_closed_time = inf` switch the two extra safeguards off.
     """
 
     def __init__(self, cfg: GateConfig):
         self.cfg = cfg
-        self.state = "OPEN"
-        self.t_changed = -np.inf          # last time the DOOR physically closed / reopened
+        self.closed = False
+        self.t_changed = -np.inf          # last time the gate closed / reopened
         self.t_opened = -np.inf           # last time it (re)opened
-        self.t_warn = -np.inf             # when the CLOSING warning started
         self.events: List[GateEvent] = []
 
     @property
-    def closed(self) -> bool:
-        return self.state == "CLOSED"
+    def state(self) -> str:
+        return "CLOSED" if self.closed else "OPEN"
 
-    @property
-    def passable(self) -> bool:
-        return self.state != "CLOSED"     # OPEN and CLOSING both let people through
-
-    def update(self, t: float, value: float, can_close: bool = True) -> bool:
-        """Feed one sensor reading. Returns True if the DOOR changed (closed or reopened)."""
+    def update(self, t: float, value: float) -> bool:
+        """Feed one sensor reading. Returns True if the gate changed state (closed or reopened)."""
         c, eps = self.cfg, 1e-9
         if not c.enabled:
             return False
-        if self.state == "OPEN":
-            if value > c.close_above and can_close and t - self.t_opened >= c.min_open_time - eps:
-                if c.close_warning_time <= 0:
-                    return self._set(True, t, value, "threshold")
-                self.state, self.t_warn = "CLOSING", t
-        elif self.state == "CLOSING":
-            if t - self.t_warn >= c.close_warning_time - eps:
-                if value > c.close_above and can_close:
-                    return self._set(True, t, value, "threshold")
-                self.state = "OPEN"                       # warning cancelled
+        if not self.closed:
+            if value > c.close_above and t - self.t_opened >= c.min_open_time - eps:
+                return self._set(True, t, value, "threshold")
         else:
             waited = t - self.t_changed
             if waited >= c.max_closed_time - eps:
@@ -88,7 +73,7 @@ class GateController:
         return False
 
     def _set(self, closed: bool, t: float, value: float, reason: str) -> bool:
-        self.state = "CLOSED" if closed else "OPEN"
+        self.closed = closed
         self.t_changed = t
         if not closed:
             self.t_opened = t
@@ -119,34 +104,12 @@ class ExitSign:
         self.camera = self.door_center - self.inward * (half_depth + 0.2)
         self.facing = -self.inward                         # looks from the door into the corridor
         self.min_range, self.max_range = self._ground_range()
-        self.door_width_m = self._clear_door_width()
         self.mask = self._visible_mask()
         self.visible_area_m2 = float(self.mask.sum()) * floor.s ** 2
         self.last_count = 0                                # raw people count in the cone
         self.last_value = 0.0                              # smoothed metric the gate reads
         n_win = max(1, int(round(sensor.smooth_window / sensor.period))) if sensor.smooth_window > 0 else 1
         self._window: Deque[float] = deque(maxlen=n_win)
-
-    def _clear_door_width(self) -> float:
-        """Clear width of the door gap in metres (after any narrowing), from the free-space grid."""
-        x0, y0, x1, y1 = self.cfg.door
-        if self.cfg.inward[1] != 0:                      # horizontal gap in a wall that runs along x
-            n = int(self.floor.base_free[(y0 + y1) // 2, x0:x1 + 1].sum())
-        else:
-            n = int(self.floor.base_free[y0:y1 + 1, (x0 + x1) // 2].sum())
-        return n * self.floor.s
-
-    @property
-    def estimated_people(self) -> float:
-        """Smoothed number of people the camera sees (converts the density back to people)."""
-        if self.sensor.metric == "density":
-            return self.last_value * self.visible_area_m2
-        return self.last_value
-
-    def estimated_wait_s(self, flow_per_m_s: float) -> float:
-        """How long the queue the camera sees needs to get through this door."""
-        cap = flow_per_m_s * self.door_width_m
-        return self.estimated_people / cap if cap > 0 else float("inf")
 
     # ------------------------------------------------------------------ mounting geometry
     def _ground_range(self) -> Tuple[float, float]:
@@ -211,7 +174,7 @@ class ExitSign:
         px, py = self.floor.to_px(pos)
         return int(self.mask[py, px].sum())
 
-    def update(self, t: float, count: int, can_close: bool = True) -> bool:
+    def update(self, t: float, count: int) -> bool:
         """One camera reading -> (AI counting error) -> metric -> moving average -> gate."""
         if self.sensor.count_error > 0 and count > 0:
             count = max(0, int(round(count * (1.0 + self.rng.normal(0.0, self.sensor.count_error)))))
@@ -222,15 +185,11 @@ class ExitSign:
             raw = float(count)
         self._window.append(raw)
         self.last_value = float(np.mean(self._window))
-        return self.gate.update(t, self.last_value, can_close)
+        return self.gate.update(t, self.last_value)
 
     @property
     def closed(self) -> bool:
         return self.gate.closed
-
-    @property
-    def passable(self) -> bool:
-        return self.gate.passable
 
     @property
     def state(self) -> str:
@@ -256,14 +215,6 @@ class ExitSign:
     def evacuated(self, pos: np.ndarray) -> np.ndarray:
         """Agents that are deep enough inside this exit room count as safe."""
         return self._in_room_footprint(pos) & (self._depth_past_door(pos) >= self.evac_depth)
-
-    def in_doorway(self, pos: np.ndarray) -> np.ndarray:
-        """Agents whose centre is inside the door gap (or past it, not yet evacuated)."""
-        dx0, dy0, dx1, dy1 = self.door_m
-        across = (pos[:, 0] >= dx0) & (pos[:, 0] <= dx1) if self.inward[1] != 0 else \
-                 (pos[:, 1] >= dy0) & (pos[:, 1] <= dy1)
-        door_thickness = abs(np.dot([dx1 - dx0, dy1 - dy0], self.inward))
-        return across & (self._depth_past_door(pos) > -door_thickness)
 
     def gate_segment(self) -> Tuple[float, float, float, float]:
         return self.door_m

@@ -2,13 +2,10 @@
 Simulation: owns the clock and calls every component in the right order.
 
 One step (dt):
-  1. every sensor period: each ExitSign counts the people it sees and updates its gate;
-     a gate change repaints the door as wall/floor. Every frame, agents that reach a closed
-     gate notice it, react after a delay and re-route (no instant global knowledge)
-  2. look up each agent's desired direction from the route field of its target exit
-  3. Social Force Model forces + integration (Crowd.step)
-  4. remove agents that reached an exit room
-  5. every frame period: record metrics
+  1. every sensor period: each ExitSign counts the people it sees and updates its state
+  2. Social Force Model forces + integration (Crowd.step; agents walk towards their nearest exit)
+  3. remove agents that reached an exit room
+  4. every frame period: record metrics
 """
 from __future__ import annotations
 
@@ -46,7 +43,7 @@ class Simulation:
             initial_positions = self._spawn_in_rooms(cfg.spawn.n_agents)
         n = len(initial_positions)
         v0 = self.rng.uniform(cfg.ped.v0_min, cfg.ped.v0_max, n)
-        self.crowd = Crowd(initial_positions, v0, cfg.ped, cfg.force, self.rng)
+        self.crowd = Crowd(initial_positions, v0, cfg.ped, cfg.force, self.rng, self.nav)
         self.n_total = n
 
         self.dt = cfg.sim.dt
@@ -56,7 +53,6 @@ class Simulation:
         self.t = 0.0
         self.evac_time = np.full(n, np.nan)       # by agent id
         self.evac_exit = np.full(n, -1)
-        self.assign_targets()
         self.recorder = Recorder(self)
         self._sense_and_control()                  # initial reading at t = 0
         self.recorder.record()
@@ -100,91 +96,11 @@ class Simulation:
                 raise RuntimeError("Could not place all agents; rooms are too full")
         return placed
 
-    # ------------------------------------------------------------------ decisions
-    def assign_targets(self) -> None:
-        """Every agent heads for the nearest OPEN exit (walking distance).
-        If every exit is closed, agents keep their current target."""
-        c = self.crowd
-        if len(c) == 0:
-            return
-        D = np.stack([nf.distance(c.pos) for nf in self.nav], axis=1)
-        closed = np.array([s.closed for s in self.signs])
-        D[:, closed] = np.inf
-        has_open = np.isfinite(D).any(axis=1)
-        c.target[has_open] = np.argmin(D[has_open], axis=1)
-
+    # ------------------------------------------------------------------ sensing & control
     def _sense_and_control(self) -> None:
         for s in self.signs:
             count = s.count(self.crowd.pos)
-            # Hub rule: never close the gate if that would leave too few passable exits.
-            others = sum(1 for o in self.signs if o is not s and o.passable)
-            can_close = others >= self.cfg.gate.min_open_exits
-            if s.update(self.t, count, can_close):
-                if self.cfg.gate.mode == "block":
-                    if s.closed:
-                        # People already inside the door gap are let through, not crushed.
-                        through = s.in_doorway(self.crowd.pos)
-                        if through.any():
-                            self._mark_evacuated(through, s.idx)
-                    self.floor.set_gate(s.idx, s.closed)
-                # mode "divert": the door itself is never shut, only the guidance changes
-
-    def _update_awareness(self) -> None:
-        """People are NOT told about closed gates. An agent heading for a closed gate only
-        notices it once it is within `notice_distance` (walking), then needs a reaction delay,
-        then picks the nearest exit that is open. Agents far away keep walking towards it."""
-        g, c = self.cfg.gate, self.crowd
-        if not g.reroute_on_close or len(c) == 0:
-            return
-        closed = np.array([s.closed for s in self.signs])
-        if not closed.any():
-            c.aware_at[:] = np.nan
-            return
-        d_tgt = np.empty(len(c))
-        for k in np.unique(c.target):
-            m = c.target == k
-            d_tgt[m] = self.nav[k].distance(c.pos[m])
-        blocked = closed[c.target]
-        if g.mode == "divert":                      # people already in the queue do not turn back
-            blocked &= d_tgt > g.commit_distance
-        c.aware_at[~blocked] = np.nan
-        new = blocked & (d_tgt <= g.notice_distance) & np.isnan(c.aware_at)
-        if new.any():
-            c.aware_at[new] = self.t + self.rng.uniform(g.reaction_delay_min, g.reaction_delay_max,
-                                                        int(new.sum()))
-        with np.errstate(invalid="ignore"):
-            act = blocked & (c.aware_at <= self.t + 1e-9)
-        if act.any() and not closed.all():
-            D = np.stack([nf.distance(c.pos[act]) for nf in self.nav], axis=1)
-            cur_D = D[np.arange(len(D)), c.target[act]]          # distance to the exit they are heading to
-            D[:, closed] = np.inf
-            ok = np.isfinite(D).any(axis=1)
-            idx_all = np.flatnonzero(act)
-            if g.mode == "divert" and g.cost_based_divert:
-                # time = walk + queue wait; switch only if clearly faster than staying
-                wait = np.array([s.estimated_wait_s(g.flow_per_m_s) for s in self.signs])
-                v = np.maximum(c.v0[act], 0.3)[:, None]
-                cost = D / v + wait[None, :]
-                best = np.argmin(cost, axis=1)
-                cost_best = cost[np.arange(len(cost)), best]
-                cost_cur = cur_D / v[:, 0] + wait[c.target[act]]
-                go = ok & (cost_best + g.switch_margin_s < cost_cur)
-                stay = ok & ~go
-                c.target[idx_all[go]] = best[go]
-                c.aware_at[idx_all[go]] = np.nan
-                c.aware_at[idx_all[stay]] = self.t + g.recheck_s   # look again a bit later
-            else:
-                idx = idx_all[ok]
-                c.target[idx] = np.argmin(D[ok], axis=1)
-                c.aware_at[idx] = np.nan
-
-    def _desired_directions(self) -> np.ndarray:
-        c = self.crowd
-        e = np.zeros((len(c), 2))
-        for k in np.unique(c.target):
-            m = c.target == k
-            e[m] = self.nav[k].direction(c.pos[m])
-        return e
+            s.update(self.t, count)
 
     def _mark_evacuated(self, mask: np.ndarray, exit_idx: int) -> None:
         ids = self.crowd.remove(mask)
@@ -199,9 +115,7 @@ class Simulation:
     def step(self) -> None:
         if self.step_idx % self.sensor_every == 0 and self.step_idx > 0:
             self._sense_and_control()
-        if self.step_idx % self.frame_every == 0:
-            self._update_awareness()
-        self.crowd.step(self._desired_directions(), self.floor, self.dt)
+        self.crowd.step(self.floor, self.dt)
         for s in self.signs:
             ev = s.evacuated(self.crowd.pos)
             if ev.any():

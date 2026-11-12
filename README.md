@@ -46,16 +46,11 @@ Camera trên biển thoát hiểm là **hình nón nhìn từ cửa ra hành lan
 
 ### 5. Logic cửa
 
-Mỗi cửa có 3 trạng thái: OPEN, CLOSING (cảnh báo 3 s, vẫn đi qua được), CLOSED.
+Mỗi cửa có 2 trạng thái: `OPEN` (xanh) và `CLOSED` (đỏ).
 
-- Đóng: giá trị camera > `close_above` (0.7 người/m²), cửa đã mở ≥ `min_open_time` (5 s), rồi qua `close_warning_time` (3 s) cảnh báo; nếu đám đông tan trong lúc cảnh báo thì hủy.
-- Mở lại: đã đóng ≥ `min_closed_time` (10 s) và giá trị ≤ `reopen_at_most` (0.4 người/m²), hoặc **bắt buộc mở sau `max_closed_time` (20 s)** dù đông (chống kẹt).
-- `min_open_exits` (1): không bao giờ đóng cửa nếu như vậy không còn cửa nào khác đi được (cần một tin nhắn qua hub giữa các biển).
-- **`mode`** quyết định "đóng" nghĩa là gì:
-  - `"divert"` (mặc định): cửa vẫn mở thật. Biển chuyển hướng những người **chưa vào hàng** (xa cửa hơn `commit_distance` = 8 m); người đã ở trong hàng vẫn đi qua.
-  - `"block"`: cửa bị chặn hẳn. Người trong khe cửa lúc đó vẫn được cho qua.
-- `cost_based_divert` (mặc định tắt, `--cost-divert`): người chỉ đổi cửa khi (đi bộ + hàng chờ ước lượng từ camera và bề rộng cửa) nhanh hơn ít nhất `switch_margin_s`. Ước lượng chờ = số người camera thấy / (`flow_per_m_s` × bề rộng cửa); `flow_per_m_s` = 1.5 là giả định. Trên bản đồ này bật lên thì không ai đổi cửa (cửa kia quá xa) nên kết quả bằng "không cổng".
-- Người **không biết** biển đã đổi trạng thái: chỉ khi tới trong `notice_distance` (15 m đường đi) họ mới thấy, chờ 1-3 s (`reaction_delay_*`) rồi chọn cửa mở gần nhất. Tắt hẳn bằng `reroute_on_close = False`.
+- Đóng (`CLOSED`): giá trị camera > `close_above` (0.7 người/m²) và cửa đã mở ≥ `min_open_time` (5 s).
+- Mở lại (`OPEN`): đã đóng ≥ `min_closed_time` (10 s) và giá trị ≤ `reopen_at_most` (0.4 người/m²), hoặc **bắt buộc mở sau `max_closed_time` (20 s)** dù đông (chống kẹt).
+- Khi biển ở trạng thái `CLOSED` (hiển thị đỏ / `CLOSED`): cửa vật lý vẫn mở, các agent vẫn đi về phía biển thoát hiểm gần nhất (dựa theo `Crowd`) bất kể trạng thái đóng/mở của biển.
 
 ### 6. Kịch bản quá tải
 
@@ -69,4 +64,3 @@ python scenarios.py --seeds 3 --only left_1m2,left_1m0                      (so 
 Ví dụ khác:
 
 python run.py --agents 300 --headless --no-gates   (đối chứng)
-python run.py --agents 300 --headless --mode block (chặn cửa thật)

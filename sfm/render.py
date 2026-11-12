@@ -98,8 +98,8 @@ class Renderer:
 
         g = sim.cfg.gate
         for s, p, lbl in zip(sim.signs, self.gate_patches, self.labels):
-            p.set_color("red" if s.closed else "orange" if s.state == "CLOSING" else "limegreen")
-            state = "REDIRECT" if (s.closed and sim.cfg.gate.mode == "divert") else s.state
+            p.set_color("red" if s.closed else "limegreen")
+            state = "CLOSED" if s.closed else "OPEN"
             val = f" ({s.last_value:.2f}/m2)" if sim.cfg.sensor.metric == "density" else ""
             lbl.set_text(f"E{s.idx + 1}: {s.last_count:2d} seen{val} | {state}")
             lbl.get_bbox_patch().set_edgecolor("red" if s.closed else "0.5")

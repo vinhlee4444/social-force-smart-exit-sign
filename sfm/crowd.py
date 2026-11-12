@@ -12,42 +12,64 @@ Social Force Model (Helbing, Farkas & Vicsek, Nature 2000):
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 import numpy as np
 
 from .config import ForceConfig, PedestrianConfig
 from .floorplan import FloorPlan
+from .navigation import NavigationField
 
 
 class Crowd:
     def __init__(self, pos: np.ndarray, v0: np.ndarray, ped: PedestrianConfig,
-                 force: ForceConfig, rng: np.random.Generator):
+                 force: ForceConfig, rng: np.random.Generator,
+                 nav: Optional[List[NavigationField]] = None):
         n = len(pos)
         self.ped = ped
         self.fc = force
         self.rng = rng
+        self.nav = nav
         self.pos = np.asarray(pos, float).reshape(n, 2).copy()     # m
         self.vel = np.zeros((n, 2))                                # m/s
         self.v0 = np.asarray(v0, float).copy()                     # desired speed, m/s
         self.radius = np.full(n, ped.radius)                       # m
         self.mass = np.full(n, ped.mass)                           # kg
         self.ids = np.arange(n)                                    # stable id per agent
-        self.target = np.zeros(n, dtype=np.int64)                  # index of the exit each agent heads for
+        self.target = np.zeros(n, dtype=np.int64)                  # index of the nearest exit each agent heads for
         self.contact = np.zeros(n)                                 # N, compression force felt (crush proxy)
-        self.aware_at = np.full(n, np.nan)                         # s, when this agent decides to leave a closed exit
         self._pairs_i = self._pairs_j = None
         self._pos_at_build: Optional[np.ndarray] = None
+        if self.nav is not None and n > 0:
+            self.assign_nearest_targets()
 
     def __len__(self) -> int:
         return len(self.pos)
+
+    # ------------------------------------------------------------------ routing
+    def assign_nearest_targets(self) -> None:
+        """Every agent heads for the nearest exit (walking distance), regardless of gate state."""
+        if self.nav is None or len(self) == 0:
+            return
+        D = np.stack([nf.distance(self.pos) for nf in self.nav], axis=1)
+        self.target = np.argmin(D, axis=1)
+
+    def desired_directions(self) -> np.ndarray:
+        """Unit desired walking direction for every agent from its target exit's route field."""
+        e = np.zeros((len(self), 2))
+        if self.nav is None or len(self) == 0:
+            return e
+        for k in np.unique(self.target):
+            m = self.target == k
+            e[m] = self.nav[k].direction(self.pos[m])
+        return e
 
     # ------------------------------------------------------------------ bookkeeping
     def remove(self, mask: np.ndarray) -> np.ndarray:
         """Remove agents where mask is True. Returns their ids."""
         gone = self.ids[mask]
         keep = ~mask
-        for name in ("pos", "vel", "v0", "radius", "mass", "ids", "target", "contact", "aware_at"):
+        for name in ("pos", "vel", "v0", "radius", "mass", "ids", "target", "contact"):
             setattr(self, name, getattr(self, name)[keep])
         self._pos_at_build = None                                  # force neighbour-list rebuild
         return gone
@@ -117,10 +139,13 @@ class Crowd:
         self.contact = contact
         return F
 
-    def step(self, desired_dir: np.ndarray, floor: FloorPlan, dt: float) -> None:
+    def step(self, floor: FloorPlan, dt: float,
+             desired_dir: Optional[np.ndarray] = None) -> None:
         """Advance one time step with semi-implicit Euler."""
         if len(self) == 0:
             return
+        if desired_dir is None:
+            desired_dir = self.desired_directions()
         F = self.compute_forces(desired_dir, floor)
         self.vel += F / self.mass[:, None] * dt
         speed = np.linalg.norm(self.vel, axis=1)

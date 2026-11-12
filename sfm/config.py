@@ -34,7 +34,7 @@ class MapConfig:
     seal_rects: List[Rect] = field(default_factory=lambda: [])
     # Narrow every exit door to this clear width (m), centred on the drawn gap. None = as drawn
     # (5.6 m, wider than a real exit door; real doors are ~1.2-2.4 m).
-    exit_door_width_m: Optional[float] = None
+    exit_door_width_m: Optional[float] = 2.4
 
 
 @dataclass
@@ -60,7 +60,7 @@ def default_exits() -> List[ExitConfig]:
 class PedestrianConfig:
     """Identical body parameters for every agent; only the desired speed varies."""
     mass: float = 80.0                     # kg
-    radius: float = 0.3                    # m (shoulder half-width)
+    radius: float = 0.5                    # m (shoulder half-width)
     v0_min: float = 1.5                    # desired speed ~ U(v0_min, v0_max), hurried evacuation
     v0_max: float = 2.0
     tau: float = 0.5                       # s, relaxation time
@@ -110,7 +110,7 @@ class SensorConfig:
     use_min_range: bool = True             # False = ignore mounting geometry (no blind zone)
     vfov_deg: float = 45.3                 # vertical field of view
     mount_height: float = 2.5              # m above floor (exit signs hang ~2.3-2.7 m)  <-- set the real value
-    tilt_deg: float = 30.0                 # deg below horizontal                          <-- set the real value
+    tilt_deg: float = 45.0                 # deg below horizontal                          <-- set the real value
     # --- what the gate controller reads ---
     metric: str = "density"                # "density" (people / m2 of visible floor) or "count"
     smooth_window: float = 3.0             # s, moving average over the readings (0 = no smoothing)
@@ -127,30 +127,6 @@ class GateConfig:
     min_closed_time: float = 10.0          # ... AND the gate has been closed >= this long
     max_closed_time: float = 20.0          # fail-safe: reopen after this long whatever the crowd does
     min_open_time: float = 5.0             # after (re)opening, stay open at least this long (anti-flicker)
-    close_warning_time: float = 3.0        # CLOSING state: door still passable while the sign warns
-    # What "closed" means:
-    #   "block"  : the door is physically shut (nobody can pass)
-    #   "divert" : the door stays OPEN; the sign tells people who have not joined the queue yet
-    #              (farther than commit_distance) to use another exit. People already in the queue go on.
-    mode: str = "divert"
-    commit_distance: float = 8.0           # m walking distance: closer than this nobody turns back (divert mode)
-    # Divert mode only: people switch exit only when it is really faster.
-    #   cost(exit) = walking distance / walking speed + estimated queue wait
-    #   queue wait = (people the camera counts) / (flow_per_m_s * door width)
-    # The estimated waits come from the signs through the hub (one number per exit).
-    # Default OFF: in the overload scenarios the other exits are ~100 m away, so "walk + queue" never
-    # beats staying, nobody switches and the result equals "no gate". Turn on to experiment.
-    cost_based_divert: bool = False
-    flow_per_m_s: float = 1.5              # people / s / m of clear door width  <-- ASSUMPTION
-    switch_margin_s: float = 5.0           # switch only if at least this much faster
-    recheck_s: float = 3.0                 # an agent that decided to stay re-evaluates after this long
-    # Rule that needs the signs to talk to each other (one message through a hub):
-    min_open_exits: int = 1                # never close a gate if fewer than this many OTHER exits are passable
-    # What people do when their exit is closed (no omniscience):
-    reroute_on_close: bool = True          # False = nobody ever changes exit
-    notice_distance: float = 15.0          # m walking distance: closer than this, they see the closed gate
-    reaction_delay_min: float = 1.0        # s, then they need a moment ...
-    reaction_delay_max: float = 3.0        # s, ... before choosing the nearest open exit
 
 
 @dataclass

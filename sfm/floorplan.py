@@ -1,7 +1,7 @@
 """
 FloorPlan: turns the floor-plan image into everything the physics needs.
 
-* `free`      : bool image, True = walkable floor (current gate states applied)
+* `free`      : bool image, True = walkable floor
 * `sdf`       : signed distance to the nearest wall SURFACE in metres
                 (> 0 on the floor, < 0 inside a wall). Continuous across the wall surface,
                 so the wall normal is well defined even if someone gets pushed into a wall.
@@ -69,14 +69,14 @@ class FloorPlan:
                     lo, hi = c - w_px // 2, c - w_px // 2 + w_px - 1
                     free[y0:lo, x0:x1 + 1] = False
                     free[hi + 1:y1 + 1, x0:x1 + 1] = False
-        self.base_free = free                       # all gates open
+        self.base_free = free
+        self.free = free
         self.H, self.W = free.shape
         self.width_m = self.W * self.s
         self.height_m = self.H * self.s
 
-        self.gate_closed = [False] * len(exits)
         self._rebuild()
-        self.sdf_open = self.sdf.copy()             # gates-open SDF, used by static planners
+        self.sdf_open = self.sdf.copy()
 
     # ------------------------------------------------------------------ geometry
     def rect_to_m(self, r: Rect) -> Tuple[float, float, float, float]:
@@ -85,11 +85,7 @@ class FloorPlan:
         return x0 * self.s, y0 * self.s, (x1 + 1) * self.s, (y1 + 1) * self.s
 
     def _rebuild(self) -> None:
-        free = self.base_free.copy()
-        for closed, ex in zip(self.gate_closed, self.exits):
-            if closed:
-                x0, y0, x1, y1 = ex.door
-                free[y0:y1 + 1, x0 - 1:x1 + 2] = False   # 1-px overlap with the door jambs
+        free = self.base_free
         self.free = free
 
         f8 = free.astype(np.uint8)
@@ -102,14 +98,6 @@ class FloorPlan:
         norm = np.hypot(gx, gy) + 1e-12
         self.nx = gx / norm
         self.ny = gy / norm
-
-    def set_gate(self, idx: int, closed: bool) -> bool:
-        """Open/close a gate. Returns True if the state actually changed."""
-        if self.gate_closed[idx] == closed:
-            return False
-        self.gate_closed[idx] = closed
-        self._rebuild()
-        return True
 
     # ------------------------------------------------------------------ look-ups
     def _frac_idx(self, pos: np.ndarray):

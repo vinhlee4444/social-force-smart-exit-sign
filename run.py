@@ -49,34 +49,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="fail-safe: reopen after this many seconds whatever the crowd")
     p.add_argument("--min-open", type=float, default=d.gate.min_open_time,
                    help="seconds a gate stays open after reopening (anti-flicker)")
-    p.add_argument("--close-warning", type=float, default=d.gate.close_warning_time,
-                   help="seconds of CLOSING warning before the gate shuts (0 = instant)")
-    p.add_argument("--mode", choices=["block", "divert"], default=d.gate.mode,
-                   help="block = shut the door; divert = keep it open, sign redirects people not yet in the queue")
-    p.add_argument("--commit-distance", type=float, default=d.gate.commit_distance,
-                   help="metres: in divert mode nobody closer than this to the door turns back")
-    p.add_argument("--cost-divert", action="store_true",
-                   help="divert mode: compare walk + queue time before switching (default: go to the nearest open exit)")
-    p.add_argument("--flow", type=float, default=d.gate.flow_per_m_s,
-                   help="assumed door flow, people / s / m of clear width (queue-wait estimate)")
-    p.add_argument("--switch-margin", type=float, default=d.gate.switch_margin_s,
-                   help="seconds an alternative exit must be faster by before people switch")
-    p.add_argument("--min-open-exits", type=int, default=d.gate.min_open_exits,
-                   help="never close a gate if fewer than this many OTHER exits are passable")
-    p.add_argument("--notice-distance", type=float, default=d.gate.notice_distance,
-                   help="metres: agents only notice a closed gate within this walking distance")
     p.add_argument("--period", type=float, default=d.sensor.period, help="seconds between camera readings")
     p.add_argument("--count-error", type=float, default=d.sensor.count_error,
                    help="relative std of the AI people count (0 = perfect)")
     p.add_argument("--radius", type=float, default=d.sensor.radius, help="camera range in metres (8-10)")
     p.add_argument("--no-los", action="store_true", help="count through walls (plain circle)")
-    p.add_argument("--no-reroute", action="store_true",
-                   help="agents keep their original exit even if its gate closes")
     p.add_argument("--t-max", type=float, default=d.sim.t_max)
     p.add_argument("--dt", type=float, default=d.sim.dt)
     p.add_argument("--map", default=d.map.image_path)
-    p.add_argument("--door-width", type=float, default=None,
-                   help="narrow every exit door to this clear width in metres (default: as drawn, 5.6 m)")
+    p.add_argument("--door-width", type=float, default=d.map.exit_door_width_m,
+                   help="narrow every exit door to this clear width in metres (default: from config)")
     p.add_argument("--spawn-x-min", type=float, default=None, help="spawn agents only at x >= this (m)")
     p.add_argument("--spawn-x-max", type=float, default=None, help="spawn agents only at x <= this (m)")
     p.add_argument("--headless", action="store_true", help="no window, no video")
@@ -105,18 +87,8 @@ def make_config(a):
     cfg.gate.min_closed_time = a.min_closed
     cfg.gate.max_closed_time = a.max_closed
     cfg.gate.min_open_time = a.min_open
-    cfg.gate.close_warning_time = a.close_warning
-    cfg.gate.min_open_exits = a.min_open_exits
-    cfg.gate.mode = a.mode
-    cfg.gate.cost_based_divert = a.cost_divert
-    cfg.gate.flow_per_m_s = a.flow
-    cfg.gate.switch_margin_s = a.switch_margin
-    cfg.gate.commit_distance = a.commit_distance
-    cfg.gate.notice_distance = a.notice_distance
     cfg.sensor.period = a.period
     cfg.sensor.count_error = a.count_error
-    if a.no_reroute:
-        cfg.gate.reroute_on_close = False
     cfg.sensor.radius = a.radius
     cfg.sensor.metric = a.metric
     cfg.sensor.smooth_window = a.smooth

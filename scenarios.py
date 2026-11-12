@@ -39,25 +39,15 @@ def v_nogate(c):
     c.gate.enabled = False
 
 
-def make_block(close, reopen):
-    def f(c):
-        c.gate.mode = "block"
-        c.gate.close_above, c.gate.reopen_at_most = close, reopen
-    return f
-
-
-def v_old(c):                                    # original behaviour (circle, count 25/15, instant, omniscient)
+def v_old(c):                                    # original behaviour (circle, count 25/15, instant)
     c.sensor.fov_deg, c.sensor.use_min_range, c.sensor.radius = 360, False, 10
     c.sensor.metric, c.sensor.smooth_window, c.sensor.period, c.sensor.count_error = "count", 0, 0.1, 0
-    c.gate.close_above, c.gate.reopen_at_most, c.gate.close_warning_time = 25, 15, 0
-    c.gate.min_open_time, c.gate.max_closed_time, c.gate.min_open_exits = 0, 1e9, 0
-    c.gate.notice_distance = 1e9
+    c.gate.close_above, c.gate.reopen_at_most = 25, 15
+    c.gate.min_open_time, c.gate.max_closed_time = 0, 1e9
 
 
-def make_div(close, reopen, commit=8.0, cost=True):
+def make_div(close, reopen):
     def f(c):
-        c.gate.mode, c.gate.commit_distance = "divert", commit
-        c.gate.cost_based_divert = cost
         c.gate.close_above, c.gate.reopen_at_most = close, reopen
     return f
 
@@ -65,10 +55,8 @@ def make_div(close, reopen, commit=8.0, cost=True):
 VARIANTS = {
     "Không cổng":                         v_nogate,
     "Cổng cũ":                            v_old,                       # only with --with-old (it jams)
-    "Chặn cửa 0.7/0.4":                   make_block(0.7, 0.4),
-    "Chuyển hướng gần nhất 0.7/0.4":      make_div(0.7, 0.4, cost=False),
-    "Chuyển hướng gần nhất 0.5/0.3":      make_div(0.5, 0.3, cost=False),
-    "Chuyển hướng theo chi phí 0.7/0.4":  make_div(0.7, 0.4),
+    "Chuyển hướng gần nhất 0.7/0.4":      make_div(0.7, 0.4),
+    "Chuyển hướng gần nhất 0.5/0.3":      make_div(0.5, 0.3),
 }
 
 
