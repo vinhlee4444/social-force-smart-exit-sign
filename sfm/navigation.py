@@ -133,19 +133,19 @@ def build_navigation(floor: FloorPlan, exits: List[ExitConfig], cfg: NavConfig,
     h = hashlib.sha1()
     h.update(np.packbits(floor.base_free).tobytes())
     h.update(repr((cfg.cell_size, cfg.wall_clearance, cfg.wall_penalty, cfg.target_depth,
-                   floor.s, [(e.room, e.door, e.inward) for e in exits], "v1")).encode())
+                   floor.s, [(e.room, e.door, e.inward) for e in exits], "v2")).encode())
     cache_dir = cfg.cache_dir if os.path.isabs(cfg.cache_dir) else os.path.join(base_dir, cfg.cache_dir)
     cache_file = os.path.join(cache_dir, f"nav_{h.hexdigest()[:16]}.npz")
     if os.path.exists(cache_file):
         data = np.load(cache_file)
         return [NavigationField(data[f"dist{i}"], data[f"dir{i}"], cell) for i in range(len(exits))]
 
-    # Coarse grid: a cell is passable if it contains any floor pixel (gates open).
+    # Coarse grid: a cell is passable only if all its pixels are floor (preserves thin walls).
     pad_h, pad_w = Hc * f - floor.H, Wc * f - floor.W
     free_p = np.pad(floor.base_free, ((0, pad_h), (0, pad_w)))
     sdf_p = np.pad(floor.sdf_open, ((0, pad_h), (0, pad_w)), constant_values=-1.0)
     blocks = free_p.reshape(Hc, f, Wc, f)
-    passable = blocks.any(axis=(1, 3))
+    passable = blocks.all(axis=(1, 3))
     clearance = sdf_p.reshape(Hc, f, Wc, f).max(axis=(1, 3))
     # Cost grows near walls so routes keep some distance from walls and corners.
     closeness = np.clip(1.0 - clearance / cfg.wall_clearance, 0.0, 1.0)

@@ -28,12 +28,12 @@ Rect = Tuple[int, int, int, int]  # (x0, y0, x1, y1) inclusive, image pixels
 @dataclass
 class MapConfig:
     image_path: str = "1.png"
-    meters_per_pixel: float = 0.1          # 1 px = 0.1 m  ->  1479 x 615 px = 147.9 x 61.5 m
+    meters_per_pixel: float = 0.05         # 1 px = 0.05 m -> classroom doors are 1.2m wide, exit doors are 2.4m wide 
     wall_threshold: int = 127              # grey value <= threshold is wall
     # Rectangles painted as wall on load, to repair holes in the drawn map.
     seal_rects: List[Rect] = field(default_factory=lambda: [])
     # Narrow every exit door to this clear width (m), centred on the drawn gap. None = as drawn
-    # (5.6 m, wider than a real exit door; real doors are ~1.2-2.4 m).
+    # (4.8 m, wider than a real exit door; real doors are ~1.2-2.4 m).
     exit_door_width_m: Optional[float] = 2.4
 
 
@@ -47,12 +47,12 @@ class ExitConfig:
 
 
 def default_exits() -> List[ExitConfig]:
-    # Measured from 1.png.
+    # Measured from 1.png (1382 x 729).
     return [
-        ExitConfig("E1 top-left",     room=(195, 7, 281, 95),     door=(210, 96, 267, 102),   inward=(0, -1)),
-        ExitConfig("E2 top-right",    room=(1124, 7, 1212, 95),   door=(1140, 96, 1196, 102), inward=(0, -1)),
-        ExitConfig("E3 bottom-left",  room=(196, 521, 288, 609),  door=(211, 515, 267, 520),  inward=(0, 1)),
-        ExitConfig("E4 bottom-right", room=(1124, 521, 1212, 609), door=(1140, 515, 1196, 520), inward=(0, 1)),
+        ExitConfig("E1 top-left",     room=(295, 1, 366, 98),     door=(307, 99, 354, 100),   inward=(0, -1)),
+        ExitConfig("E2 top-right",    room=(1106, 1, 1177, 98),   door=(1118, 99, 1165, 100), inward=(0, -1)),
+        ExitConfig("E3 bottom-left",  room=(295, 630, 367, 727),  door=(308, 628, 354, 629),  inward=(0, 1)),
+        ExitConfig("E4 bottom-right", room=(1106, 630, 1177, 727), door=(1118, 628, 1164, 629), inward=(0, 1)),
     ]
 
 

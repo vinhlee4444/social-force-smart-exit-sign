@@ -144,12 +144,16 @@ class FloorPlan:
         full = core_labels[nearest - 1]
         full[~self.base_free] = 0
 
-        corridor = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        # The corridor network spans the building; a single large room (e.g. the right hall)
+        # can have more floor pixels, so identify the corridor by bounding-box extent (w * h).
+        corridor = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_WIDTH] * stats[1:, cv2.CC_STAT_HEIGHT]))
         full[full == corridor] = 0
         for ex in self.exits:
             x0, y0, x1, y1 = ex.room
-            for lbl in np.unique(full[y0:y1 + 1, x0:x1 + 1]):
+            lbl = full[(y0 + y1) // 2, (x0 + x1) // 2]
+            if lbl != 0:
                 full[full == lbl] = 0
+            full[y0:y1 + 1, x0:x1 + 1] = 0
         # Re-number 1..n_rooms
         uniq = np.unique(full)
         uniq = uniq[uniq != 0]
