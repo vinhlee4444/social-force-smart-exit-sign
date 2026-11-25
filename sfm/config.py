@@ -11,7 +11,7 @@ Conventions
 
 Changing the map
 ----------------
-If `1.png` is edited, walls are re-detected automatically and spawn rooms are
+If `1.jpg` is edited, walls are re-detected automatically and spawn rooms are
 re-detected automatically (see `SpawnConfig`). You only need to update:
   1. `MapConfig.image_path` / `meters_per_pixel` if the file or scale changed,
   2. `ExitConfig` entries (room + door rectangles) so they match the new exits,
@@ -27,32 +27,36 @@ Rect = Tuple[int, int, int, int]  # (x0, y0, x1, y1) inclusive, image pixels
 
 @dataclass
 class MapConfig:
-    image_path: str = "1.png"
-    meters_per_pixel: float = 0.05         # 1 px = 0.05 m -> classroom doors are 1.2m wide, exit doors are 2.4m wide 
+    image_path: str = "1.jpg"
+    # Existing door spans remain 23–25 px after cropping the layout.
+    # Keep the 0.05 m/px door-width reference until a surveyed dimension is supplied.
+    meters_per_pixel: float = 0.05
     wall_threshold: int = 127              # grey value <= threshold is wall
     # Rectangles painted as wall on load, to repair holes in the drawn map.
-    seal_rects: List[Rect] = field(default_factory=lambda: [])
-    # Narrow every exit door to this clear width (m), centred on the drawn gap. None = as drawn
-    # (4.8 m, wider than a real exit door; real doors are ~1.2-2.4 m).
-    exit_door_width_m: Optional[float] = 2.4
+    # The JPEG cuts off the former hall beyond the east wall. Exclude its
+    # truncated strip and close the two openings into the omitted space.
+    seal_rects: List[Rect] = field(default_factory=lambda: [(1179, 0, 1187, 729), (0, 729, 1187, 729)])
+    spawn_split_px: Optional[float] = None  # default: midpoint of usable floor extent
+    # Optional width cap in metres. The revised map uses the measured raster gaps.
+    exit_door_width_m: Optional[float] = None
 
 
 @dataclass
 class ExitConfig:
-    """One exit = one exit sign + one gate. The exit room acts as the 'outside'."""
+    """An always-passable door leading to a destination zone on this floor."""
     name: str
     room: Rect                  # interior of the exit room (stairwell), px
-    door: Rect                  # door gap that the gate blocks when closed, px
+    door: Rect                  # physical door gap, px
     inward: Tuple[int, int]     # unit direction corridor -> room, image axes ((0,-1) = up)
 
 
 def default_exits() -> List[ExitConfig]:
-    # Measured from 1.png (1382 x 729).
+    # Re-measured on 1.jpg (1188 x 730), inheriting the identified exit rooms.
     return [
         ExitConfig("E1 top-left",     room=(295, 1, 366, 98),     door=(307, 99, 354, 100),   inward=(0, -1)),
-        ExitConfig("E2 top-right",    room=(1106, 1, 1177, 98),   door=(1118, 99, 1165, 100), inward=(0, -1)),
-        ExitConfig("E3 bottom-left",  room=(295, 630, 367, 727),  door=(308, 628, 354, 629),  inward=(0, 1)),
-        ExitConfig("E4 bottom-right", room=(1106, 630, 1177, 727), door=(1118, 628, 1164, 629), inward=(0, 1)),
+        ExitConfig("E2 top-right",    room=(1107, 1, 1178, 98),   door=(1119, 99, 1166, 100), inward=(0, -1)),
+        ExitConfig("E3 bottom-left",  room=(296, 632, 367, 728),  door=(308, 630, 355, 631),  inward=(0, 1)),
+        ExitConfig("E4 bottom-right", room=(1107, 632, 1178, 728), door=(1119, 630, 1165, 631), inward=(0, 1)),
     ]
 
 
@@ -65,6 +69,7 @@ class PedestrianConfig:
     v0_max: float = 2.0
     tau: float = 0.5                       # s, relaxation time
     v_max_factor: float = 1.3              # speed is capped at v_max_factor * v0
+    avoid_head_on: bool = True             # steer right at a projected opposing encounter
 
 
 @dataclass
@@ -84,28 +89,25 @@ class ForceConfig:
 @dataclass
 class NavConfig:
     """Navigation (route) fields: geodesic distance to each exit."""
-    cell_size: float = 0.2                 # m, resolution of the route grid
+    cell_size: float = 0.1                 # m, resolution of the route grid
     wall_clearance: float = 1.0            # m, paths prefer staying this far from walls
     wall_penalty: float = 4.0              # extra cost factor right next to a wall
     target_depth: float = 1.5              # m, route target = exit-room cells this deep past the door
     evac_depth: float = 1.0                # m, an agent this deep inside an exit room has evacuated
     cache_dir: str = "cache"
+    rebuild_cache: bool = False           # skip reading the cache for geometry verification
 
 
 @dataclass
 class SensorConfig:
-    """Smart exit sign camera (OmniVision OV5648: HFOV 58.6 deg, VFOV 45.3 deg).
-
-    The camera sits above the door and looks into the corridor (opposite of `inward`),
-    so its floor footprint is a CONE, not a circle.
-    """
-    radius: float = 8.0                    # m, max counting range (8-10 m; > 10 m is not trusted)
+    """Simulated corridor-facing camera with illustrative lens and mounting geometry."""
+    radius: float = 11.2                   # m, configured upper limit
     fov_deg: float = 58.6                  # horizontal field of view; 360 = omnidirectional (old behaviour)
     line_of_sight: bool = True             # cameras cannot see through walls
     # An AI crowd counter (CSRNet / DM-Count) on an edge device needs a fraction of a second
     # to a few seconds per frame, so the sign does NOT read the crowd 10x per second.
     period: float = 1.0                    # s between two camera readings
-    count_error: float = 0.10              # relative std of the AI count (0 = perfect counter)
+    count_error: float = 0.0               # exact simulated count by default
     # --- mounting: camera looks DOWN from above the door -> blind zone right below it ---
     use_min_range: bool = True             # False = ignore mounting geometry (no blind zone)
     vfov_deg: float = 45.3                 # vertical field of view
@@ -118,15 +120,28 @@ class SensorConfig:
 
 @dataclass
 class GateConfig:
-    enabled: bool = True                   # False = baseline (gates always open)
-    # Thresholds are in the unit of SensorConfig.metric:
-    #   density -> people / m2 of the camera's visible floor (~26 m2). 0.7 /m2 ~ 19 people in view.
-    #   count   -> people
-    close_above: float = 0.7               # "closed" when value > close_above
-    reopen_at_most: float = 0.4            # reopen when value <= reopen_at_most ...
-    min_closed_time: float = 10.0          # ... AND the gate has been closed >= this long
-    max_closed_time: float = 20.0          # fail-safe: reopen after this long whatever the crowd does
-    min_open_time: float = 5.0             # after (re)opening, stay open at least this long (anti-flicker)
+    enabled: bool = True                   # display congestion signals
+    close_above: float = 3.0               # RED above this density (people/m²)
+    reopen_at_most: float = 1.0            # GREEN at or below this density
+    min_closed_time: float = 10.0          # minimum RED dwell time, s
+    min_open_time: float = 5.0             # minimum GREEN dwell time, s
+
+
+@dataclass
+class GuidanceConfig:
+    policy: str = "congestion_guidance"     # or "off"
+    switch_probability: float = 0.6
+    reaction_delay: Tuple[float, float] = (1.0, 3.0)
+    commit_distance: float = 5.0            # m to the door face
+    switch_cooldown: float = 10.0
+    decision_recheck_period: float = 5.0
+    max_extra_distance: float = 30.0
+    read_distance: float = 16.0             # m, illustrative sign legibility
+    approach_length: float = 10.0           # m of approach requiring evidence in covered_routes
+    branch_min_shared_m: float = 1.0       # m of mapped path still shared ahead
+    branch_lookahead_m: float = 8.0        # m to look for the split
+    branch_extra_ratio: float = 0.5        # maximum extra distance relative to remaining original route
+    opposing_corridor_width_m: float = 2.0 # m between opposite mapped centre paths, with clear floor
 
 
 @dataclass
@@ -151,6 +166,14 @@ class SimConfig:
 
 
 @dataclass
+class RoomFlowConfig:
+    enabled: bool = True
+    decision_period: float = 0.1           # s, independent of video sampling
+    stall_speed: float = 0.05              # m/s, all occupants must remain below this speed
+    stall_duration: float = 2.0            # s of collective standstill before yielding
+
+
+@dataclass
 class Config:
     map: MapConfig = field(default_factory=MapConfig)
     exits: List[ExitConfig] = field(default_factory=default_exits)
@@ -159,6 +182,8 @@ class Config:
     nav: NavConfig = field(default_factory=NavConfig)
     sensor: SensorConfig = field(default_factory=SensorConfig)
     gate: GateConfig = field(default_factory=GateConfig)
+    guidance: GuidanceConfig = field(default_factory=GuidanceConfig)
     spawn: SpawnConfig = field(default_factory=SpawnConfig)
     sim: SimConfig = field(default_factory=SimConfig)
+    room_flow: RoomFlowConfig = field(default_factory=RoomFlowConfig)
 

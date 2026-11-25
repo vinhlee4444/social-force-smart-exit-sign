@@ -3,7 +3,7 @@ Run one evacuation.
 
 Examples
 --------
-  python run.py                                  # live window, 200 agents, gates on
+  python run.py                                  # live window with congestion signals
   python run.py --save results/run.mp4           # write a video (also .gif)
   python run.py --headless --out results/run1    # no graphics, just CSV/JSON/plots
   python run.py --no-gates --save results/baseline.mp4
@@ -25,18 +25,18 @@ def build_parser() -> argparse.ArgumentParser:
     from sfm.config import Config
     d = Config()
     p = argparse.ArgumentParser(
-        description="SFM evacuation with smart exit gates (defaults come from sfm/config.py)",
+        description="SFM evacuation with congestion signals (defaults come from sfm/config.py)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--agents", type=int, default=d.spawn.n_agents)
     p.add_argument("--seed", type=int, default=d.sim.seed)
-    p.add_argument("--no-gates", action="store_true", help="baseline: gates never close")
+    p.add_argument("--no-gates", action="store_true", help="baseline: no congestion guidance")
     p.add_argument("--close-above", type=float, default=d.gate.close_above,
-                   help="close threshold, in the unit of --metric")
+                   help="red signal threshold, in the unit of --metric")
     p.add_argument("--reopen-at-most", type=float, default=d.gate.reopen_at_most,
-                   help="reopen threshold, in the unit of --metric")
+                   help="green signal threshold, in the unit of --metric")
     p.add_argument("--metric", choices=["density", "count"], default=d.sensor.metric,
-                   help="what the gate reads: people/m2 of visible floor, or raw people count")
+                   help="camera metric: people/m2 of visible floor, or raw people count")
     p.add_argument("--smooth", type=float, default=d.sensor.smooth_window,
                    help="moving-average window of the camera reading, seconds (0 = off)")
     p.add_argument("--fov", type=float, default=d.sensor.fov_deg,
@@ -45,14 +45,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tilt", type=float, default=d.sensor.tilt_deg, help="degrees below horizontal")
     p.add_argument("--no-min-range", action="store_true", help="ignore the blind zone under the camera")
     p.add_argument("--min-closed", type=float, default=d.gate.min_closed_time, help="seconds")
-    p.add_argument("--max-closed", type=float, default=d.gate.max_closed_time,
-                   help="fail-safe: reopen after this many seconds whatever the crowd")
     p.add_argument("--min-open", type=float, default=d.gate.min_open_time,
                    help="seconds a gate stays open after reopening (anti-flicker)")
     p.add_argument("--period", type=float, default=d.sensor.period, help="seconds between camera readings")
     p.add_argument("--count-error", type=float, default=d.sensor.count_error,
                    help="relative std of the AI people count (0 = perfect)")
-    p.add_argument("--radius", type=float, default=d.sensor.radius, help="camera range in metres (8-10)")
+    p.add_argument("--radius", type=float, default=d.sensor.radius, help="configured camera range limit in metres")
     p.add_argument("--no-los", action="store_true", help="count through walls (plain circle)")
     p.add_argument("--t-max", type=float, default=d.sim.t_max)
     p.add_argument("--dt", type=float, default=d.sim.dt)
@@ -85,7 +83,6 @@ def make_config(a):
     cfg.gate.close_above = a.close_above
     cfg.gate.reopen_at_most = a.reopen_at_most
     cfg.gate.min_closed_time = a.min_closed
-    cfg.gate.max_closed_time = a.max_closed
     cfg.gate.min_open_time = a.min_open
     cfg.sensor.period = a.period
     cfg.sensor.count_error = a.count_error
@@ -113,8 +110,9 @@ def main(argv=None) -> int:
     cfg = make_config(a)
     out = a.out or os.path.join(BASE_DIR, "results", time.strftime("%Y%m%d-%H%M%S"))
     sim = Simulation(cfg, base_dir=BASE_DIR)
+    print(f"Runner opened: {sim.floor.image_path}\nMap SHA-256: {sim.floor.image_sha256}")
     print(f"{sim.n_total} agents spawned in {int(sim.rooms.max()) if sim.rooms is not None else '?'} rooms; "
-          f"gates {'ON' if cfg.gate.enabled else 'OFF'}; seed {cfg.sim.seed}")
+          f"guidance {'ON' if cfg.gate.enabled else 'OFF'}; seed {cfg.sim.seed}")
 
     t0 = time.time()
     if a.save:
@@ -135,8 +133,8 @@ def main(argv=None) -> int:
     print(f"\nwall-clock {time.time() - t0:.1f} s | sim time {s['sim_time_s']} s | "
           f"evacuated {s['evacuated']}/{s['n_agents']} | T90 {s['T90_s']} s | T100 {s['T100_s']} s")
     for e in s["exits"]:
-        print(f"  {e['name']:16s} evacuated {e['evacuated']:4d} | closures {e['closures']:2d} | "
-              f"closed {e['total_closed_s']:6.1f} s | max count {e['max_count']} | "
+        print(f"  {e['name']:16s} evacuated {e['evacuated']:4d} | red entries {e['red_entries']:2d} | "
+              f"red time {e['total_red_s']:6.1f} s | max count {e['max_count']} | "
               f"max value {e['max_value']:g} | area {e['visible_area_m2']} m2")
     print(f"  peak agents in danger {s['peak_agents_in_danger']} | danger exposure {s['danger_person_seconds']} person-s")
     print(f"results in {out}")

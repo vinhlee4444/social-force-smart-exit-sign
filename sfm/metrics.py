@@ -59,23 +59,33 @@ class Recorder:
             if t_close is not None:
                 closed_time += t_end - t_close
             counts = [r[f"count_{s.idx + 1}"] for r in self.rows]
-            values = [r[f"value_{s.idx + 1}"] for r in self.rows]
             signs.append({
                 "name": s.name,
                 "evacuated": int(np.sum(sim.evac_exit == s.idx)),
-                "closures": sum(1 for e in ev if e.closed),
-                "total_closed_s": round(closed_time, 2),
+                "red_entries": sum(1 for e in ev if e.closed),
+                "total_red_s": round(closed_time, 2),
                 "max_count": int(max(counts)) if counts else 0,
-                "max_value": round(float(max(values)), 4) if values else 0.0,
+                "max_value": round(s.peak_value, 4),
+                "max_raw_value": round(s.peak_raw_value, 4),
+                "effective_range_m": round(s.effective_range, 3),
                 "visible_area_m2": round(s.visible_area_m2, 1),
-                "events": [{"t": round(e.t, 2), "state": "CLOSED" if e.closed else "OPEN",
+                "events": [{"t": round(e.t, 2), "state": "RED" if e.closed else "GREEN",
                             "value": round(e.count, 4), "reason": e.reason} for e in ev],
             })
         return {
+            "map_name": sim.floor.image_name,
+            "map_sha256": sim.floor.image_sha256,
+            "meters_per_pixel": sim.floor.s,
             "n_agents": n,
             "evacuated": int(len(times)),
             "sim_time_s": round(t_end, 2),
             "all_evacuated": bool(len(times) == n),
+            "status": "COMPLETED" if len(times) == n else "TIMEOUT" if sim.done else "IN_PROGRESS",
+            "remaining": len(sim.crowd),
+            "progress": sim.progress.copy(),
+            "restricted_mean_s": float(np.where(np.isfinite(sim.evac_time), sim.evac_time,
+                                                 min(t_end, sim.cfg.sim.t_max)).mean()) if n else None,
+            "switches": len(sim.guidance.events) if sim.guidance is not None else 0,
             "T50_s": t_frac(0.5), "T90_s": t_frac(0.9), "T100_s": t_frac(1.0),
             "peak_contact_force_N": round(self.peak_contact, 1),
             # people squeezed above danger_force_N: peak head-count, and exposure in person-seconds
@@ -104,7 +114,7 @@ class Recorder:
         sim = self.sim
         t = np.array([r["t"] for r in self.rows])
         fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
-        axes[0].plot(t, [r["remaining"] for r in self.rows], "k-", label="remaining in building")
+        axes[0].plot(t, [r["remaining"] for r in self.rows], "k-", label="remaining on modeled floor")
         for s in sim.signs:
             axes[0].plot(t, [r[f"evac_{s.idx + 1}"] for r in self.rows], label=f"evacuated via {s.name}")
         axes[0].set_ylabel("people")
@@ -126,7 +136,7 @@ class Recorder:
             axes[2].fill_between(t, s.idx, s.idx + 0.8 * closed, step="post", alpha=0.7)
         axes[2].set_yticks(np.arange(len(sim.signs)) + 0.4)
         axes[2].set_yticklabels([s.name for s in sim.signs])
-        axes[2].set_title("gate CLOSED periods", fontsize=9)
+        axes[2].set_title("RED signal periods", fontsize=9)
         axes[2].set_xlabel("time (s)")
         fig.tight_layout()
         fig.savefig(path, dpi=110)

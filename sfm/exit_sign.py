@@ -1,20 +1,4 @@
-"""
-ExitSign: one smart exit sign = camera + crowd counter + gate controller.
-
-Each sign works completely on its own, like the real device:
-  1. `count(pos)`  : how many people the camera can see. The visible area is a CONE
-                     (SensorConfig.fov_deg) facing the corridor, up to `radius` metres,
-                     minus the blind zone below the camera (mount height + tilt), with a
-                     clear line of sight (no seeing through walls).
-  2. `update(t, count)` : turns the count into a metric (density or count), smooths it with a
-                     moving average, and feeds the gate state machine
-
-        OPEN   --(value > close_above)------------------------------> CLOSED
-        CLOSED --(closed >= min_closed_time AND value <= reopen_at_most)--> OPEN
-
-The crowd-counting model is assumed to be perfect, so `count` is the exact number of
-agents whose centre lies inside the camera's visible area.
-"""
+"""Simulated camera, congestion signal and physical exit destination."""
 from __future__ import annotations
 
 from collections import deque
@@ -36,38 +20,36 @@ class GateEvent:
 
 
 class GateController:
-    """Pure logic, no geometry: easy to unit-test.
-
-        OPEN   --(value > close_above, open >= min_open_time)-----------> CLOSED
-        CLOSED --(closed >= min_closed_time AND value <= reopen_at_most)-> OPEN
-        CLOSED --(closed >= max_closed_time)-----------------------------> OPEN   (fail-safe)
-
-    `min_open_time = 0` and `max_closed_time = inf` switch the two extra safeguards off.
-    """
+    """Red/green hysteresis with minimum dwell times."""
 
     def __init__(self, cfg: GateConfig):
         self.cfg = cfg
         self.closed = False
-        self.t_changed = -np.inf          # last time the gate closed / reopened
-        self.t_opened = -np.inf           # last time it (re)opened
+        self.t_changed = -np.inf          # time the signal last changed
+        self.initialized = False
         self.events: List[GateEvent] = []
 
     @property
     def state(self) -> str:
-        return "CLOSED" if self.closed else "OPEN"
+        if not self.cfg.enabled:
+            return "OFF"
+        if not self.initialized:
+            return "PENDING"
+        return "RED" if self.closed else "GREEN"
 
     def update(self, t: float, value: float) -> bool:
-        """Feed one sensor reading. Returns True if the gate changed state (closed or reopened)."""
+        """Feed one reading. Returns True when the signal initializes or changes."""
         c, eps = self.cfg, 1e-9
-        if not c.enabled:
+        if not c.enabled or not np.isfinite(value):
             return False
+        if not self.initialized:
+            self.initialized = True
+            return self._set(value > c.close_above, t, value, "initial_sample")
+        waited = t - self.t_changed
         if not self.closed:
-            if value > c.close_above and t - self.t_opened >= c.min_open_time - eps:
+            if value > c.close_above and waited >= c.min_open_time - eps:
                 return self._set(True, t, value, "threshold")
         else:
-            waited = t - self.t_changed
-            if waited >= c.max_closed_time - eps:
-                return self._set(False, t, value, "max_closed_time")
             if waited >= c.min_closed_time - eps and value <= c.reopen_at_most:
                 return self._set(False, t, value, "crowd_cleared")
         return False
@@ -75,8 +57,6 @@ class GateController:
     def _set(self, closed: bool, t: float, value: float, reason: str) -> bool:
         self.closed = closed
         self.t_changed = t
-        if not closed:
-            self.t_opened = t
         self.events.append(GateEvent(t, closed, value, reason))
         return True
 
@@ -84,7 +64,8 @@ class GateController:
 class ExitSign:
     def __init__(self, idx: int, ex: ExitConfig, floor: FloorPlan,
                  sensor: SensorConfig, gate: GateConfig, evac_depth: float,
-                 rng: Optional[np.random.Generator] = None):
+                 rng: Optional[np.random.Generator] = None,
+                 mask: Optional[np.ndarray] = None):
         self.rng = rng if rng is not None else np.random.default_rng(idx)
         self.idx = idx
         self.name = ex.name
@@ -101,11 +82,16 @@ class ExitSign:
         self.door_center = np.array([(dx0 + dx1) / 2, (dy0 + dy1) / 2])
         # Camera sits on the exit sign above the door, on the corridor side of the wall.
         half_depth = abs(np.dot([dx1 - dx0, dy1 - dy0], self.inward)) / 2
+        self.door_half_depth = half_depth
         self.camera = self.door_center - self.inward * (half_depth + 0.2)
         self.facing = -self.inward                         # looks from the door into the corridor
         self.min_range, self.max_range = self._ground_range()
-        self.mask = self._visible_mask()
+        self.effective_range = min(sensor.radius, self.max_range)
+        self.mask = self._visible_mask() if mask is None else mask
         self.visible_area_m2 = float(self.mask.sum()) * floor.s ** 2
+        if self.visible_area_m2 <= 0:
+            raise ValueError(f"{self.name}: camera observes zero floor area")
+        self.peak_raw_value = self.peak_value = 0.0
         self.last_count = 0                                # raw people count in the cone
         self.last_value = 0.0                              # smoothed metric the gate reads
         n_win = max(1, int(round(sensor.smooth_window / sensor.period))) if sensor.smooth_window > 0 else 1
@@ -134,7 +120,7 @@ class ExitSign:
         """Floor pixels the camera can actually see: inside the cone, between the blind
         zone and the maximum range, with a clear line of sight."""
         fl, s = self.floor, self.floor.s
-        R_px = min(self.sensor.radius, self.max_range) / s
+        R_px = self.effective_range / s
         near_px = self.min_range / s
         cx, cy = self.camera / s                                  # camera, pixel units
         x0, x1 = int(max(0, cx - R_px)), int(min(fl.W - 1, cx + R_px))
@@ -147,6 +133,7 @@ class ExitSign:
         rx0, ry0, rx1, ry1 = self.cfg.room
         in_exit_room = (xs >= rx0) & (xs <= rx1) & (ys >= ry0) & (ys <= ry1)
         inside &= ~in_exit_room
+        inside &= (px - cx) * self.facing[0] + (py - cy) * self.facing[1] >= 0
         if self.sensor.fov_deg < 360.0:                           # keep only the cone
             ex, ey = px - cx, py - cy
             cosang = (ex * self.facing[0] + ey * self.facing[1]) / (np.sqrt(d2) + 1e-9)
@@ -171,20 +158,23 @@ class ExitSign:
     def count(self, pos: np.ndarray) -> int:
         if len(pos) == 0:
             return 0
-        px, py = self.floor.to_px(pos)
+        in_bounds = ((pos >= 0) & (pos < [self.floor.width_m, self.floor.height_m])).all(axis=1)
+        px, py = self.floor.to_px(pos[in_bounds])
         return int(self.mask[py, px].sum())
 
     def update(self, t: float, count: int) -> bool:
         """One camera reading -> (AI counting error) -> metric -> moving average -> gate."""
+        self.last_count = count
         if self.sensor.count_error > 0 and count > 0:
             count = max(0, int(round(count * (1.0 + self.rng.normal(0.0, self.sensor.count_error)))))
-        self.last_count = count
         if self.sensor.metric == "density":
-            raw = count / self.visible_area_m2 if self.visible_area_m2 > 0 else 0.0
+            raw = count / self.visible_area_m2
         else:
             raw = float(count)
         self._window.append(raw)
         self.last_value = float(np.mean(self._window))
+        self.peak_raw_value = max(self.peak_raw_value, raw)
+        self.peak_value = max(self.peak_value, self.last_value)
         return self.gate.update(t, self.last_value)
 
     @property
@@ -215,6 +205,13 @@ class ExitSign:
     def evacuated(self, pos: np.ndarray) -> np.ndarray:
         """Agents that are deep enough inside this exit room count as safe."""
         return self._in_room_footprint(pos) & (self._depth_past_door(pos) >= self.evac_depth)
+
+    def distance_to_door(self, pos: np.ndarray) -> np.ndarray:
+        face = self.door_center - self.inward * self.door_half_depth
+        lo = np.array(self.door_m[:2])
+        hi = np.array(self.door_m[2:])
+        nearest = np.where(self.inward != 0, face, np.clip(pos, lo, hi))
+        return np.linalg.norm(pos - nearest, axis=1)
 
     def gate_segment(self) -> Tuple[float, float, float, float]:
         return self.door_m

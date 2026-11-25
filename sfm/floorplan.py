@@ -10,7 +10,9 @@ FloorPlan: turns the floor-plan image into everything the physics needs.
 """
 from __future__ import annotations
 
+import hashlib
 import os
+from pathlib import Path
 from typing import List, Tuple
 
 import cv2
@@ -48,10 +50,15 @@ class FloorPlan:
         path = map_cfg.image_path
         if not os.path.isabs(path):
             path = os.path.join(base_dir, path)
-        img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        self.image_path = Path(path).resolve(strict=True)
+        source = self.image_path.read_bytes()
+        self.image_name = self.image_path.name
+        self.image_sha256 = hashlib.sha256(source).hexdigest()
+        img = cv2.imdecode(np.frombuffer(source, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
         if img is None:
             raise FileNotFoundError(f"Could not read floor plan '{path}'")
 
+        self.source_raster = img
         free = img > map_cfg.wall_threshold
         for x0, y0, x1, y1 in map_cfg.seal_rects:
             free[y0:y1 + 1, x0:x1 + 1] = False
@@ -74,6 +81,13 @@ class FloorPlan:
         self.H, self.W = free.shape
         self.width_m = self.W * self.s
         self.height_m = self.H * self.s
+        occupied_columns = np.flatnonzero(free.any(axis=0))
+        if not len(occupied_columns):
+            raise ValueError(f"Floor plan '{path}' has no usable floor")
+        split = map_cfg.spawn_split_px
+        if split is None:
+            split = (occupied_columns[0] + occupied_columns[-1] + 1) / 2
+        self.split_x_m = split * self.s
 
         self._rebuild()
         self.sdf_open = self.sdf.copy()
@@ -119,6 +133,19 @@ class FloorPlan:
         return px, py
 
     # ------------------------------------------------------------------ rooms
+    def visible_from(self, origin: np.ndarray, positions: np.ndarray) -> np.ndarray:
+        """Unobstructed floor-plan segments from a sign to each reader."""
+        if not len(positions):
+            return np.zeros(0, dtype=bool)
+        delta = positions - origin
+        samples = max(1, int(np.ceil(2 * np.linalg.norm(delta, axis=1).max() / self.s)))
+        visible = np.ones(len(positions), dtype=bool)
+        for chunk in np.array_split(np.linspace(0, 1, samples + 1), max(1, samples // 32)):
+            points = origin + chunk[:, None, None] * delta
+            x, y = self.to_px(points.reshape(-1, 2))
+            visible &= self.base_free[y, x].reshape(len(chunk), -1).all(axis=0)
+        return visible
+
     def detect_rooms(self, door_close_radius_px: int) -> np.ndarray:
         """Label image of the spawnable rooms (0 = not a room).
 
@@ -160,4 +187,33 @@ class FloorPlan:
         remap = np.zeros(full.max() + 1, dtype=np.int32)
         remap[uniq] = np.arange(1, len(uniq) + 1)
         return remap[full]
+
+    def single_file_room_doors(self, rooms: np.ndarray, radius: float):
+        """Locate single room outlets that fit one body but are too narrow for two."""
+        clear = self.sdf_open >= radius
+        hall = np.pad((rooms == 0) & clear, 1)
+        neighbors = np.stack((hall[1:-1, 2:], hall[2:, 1:-1],
+                              hall[1:-1, :-2], hall[:-2, 1:-1]))
+        y, x = np.nonzero((rooms > 0) & clear & neighbors.any(axis=0))
+        offsets = np.array([[1, 0], [0, 1], [-1, 0], [0, -1]])
+        doors = {}
+        for room in np.unique(rooms[y, x]):
+            selected = rooms[y, x] == room
+            yy, xx = y[selected], x[selected]
+            interface = np.zeros((np.ptp(yy) + 1, np.ptp(xx) + 1), dtype=np.uint8)
+            interface[yy - yy.min(), xx - xx.min()] = 1
+            components, _ = cv2.connectedComponents(interface, connectivity=8)
+            if components != 2 or self.sdf_open[yy, xx].max() >= 2 * radius:
+                continue
+            edges, pixels = np.nonzero(neighbors[:, yy, xx])
+            outward = offsets[edges].sum(axis=0)
+            if not outward.any():
+                continue
+            normal = np.zeros(2)
+            axis = np.argmax(abs(outward))
+            normal[axis] = np.sign(outward[axis])
+            centers = np.column_stack((xx[pixels], yy[pixels])) + 0.5
+            door = (centers + offsets[edges] * 0.5).mean(axis=0) * self.s
+            doors[int(room)] = (door, normal)
+        return doors
 

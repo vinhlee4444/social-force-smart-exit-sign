@@ -15,6 +15,7 @@ import hashlib
 import heapq
 import math
 import os
+from tempfile import NamedTemporaryFile
 from typing import List
 
 import cv2
@@ -82,7 +83,10 @@ def _descent_direction(D: np.ndarray, fallback: np.ndarray) -> np.ndarray:
     for dy, dx, L in _OFFSETS:
         Dn = Dp[1 + dy:1 + dy + H, 1 + dx:1 + dx + W]
         ok = finite & np.isfinite(Dn)
-        rate = np.where(ok, (D - np.where(ok, Dn, 0.0)) / L, 0.0)
+        if dy and dx:
+            ok &= np.isfinite(Dp[1 + dy:1 + dy + H, 1:1 + W])
+            ok &= np.isfinite(Dp[1:1 + H, 1 + dx:1 + dx + W])
+        rate = (np.where(ok, D, 0.0) - np.where(ok, Dn, 0.0)) / L
         rate = np.maximum(rate, 0.0)
         ax += rate * dx / L
         ay += rate * dy / L
@@ -119,26 +123,52 @@ class NavigationField:
         Hc, Wc = self.dist.shape
         x0 = np.clip(np.floor(fx).astype(int), 0, Wc - 2)
         y0 = np.clip(np.floor(fy).astype(int), 0, Hc - 2)
-        return np.minimum.reduce([self.dist[y0, x0], self.dist[y0, x0 + 1],
-                                  self.dist[y0 + 1, x0], self.dist[y0 + 1, x0 + 1]])
+        return np.minimum.reduce([
+            self.dist[y0 + dy, x0 + dx] + self.cell * np.hypot(fx - x0 - dx, fy - y0 - dy)
+            for dy, dx in ((0, 0), (0, 1), (1, 0), (1, 1))
+        ])
+
+    def path_prefix(self, start, distance_m):
+        """Trace the unweighted body-clear graph with the same moves as Dijkstra."""
+        y, x = start
+        path = [(y, x)]
+        distance = 0.0
+        while distance < distance_m and self.dist[y, x] > 0:
+            best = None
+            for dy, dx, length in _OFFSETS:
+                ny, nx = y + dy, x + dx
+                if not (0 <= ny < self.dist.shape[0] and 0 <= nx < self.dist.shape[1]):
+                    continue
+                if self.dist[ny, nx] >= self.dist[y, x] or not np.isfinite(self.dist[y, nx] + self.dist[ny, x]):
+                    continue
+                choice = (self.dist[ny, nx] + length * self.cell, ny, nx, length)
+                if best is None or choice < best:
+                    best = choice
+            if best is None:
+                break
+            _, y, x, length = best
+            path.append((y, x))
+            distance += length * self.cell
+        return np.asarray(path)[:, ::-1] * self.cell
 
 
 def build_navigation(floor: FloorPlan, exits: List[ExitConfig], cfg: NavConfig,
-                     base_dir: str = ".", verbose: bool = True) -> List[NavigationField]:
+                     base_dir: str = ".", verbose: bool = True, body_radius: float = 0.0) -> List[NavigationField]:
     f = max(1, int(round(cfg.cell_size / floor.s)))     # pixels per nav cell
     cell = f * floor.s
     Hc, Wc = math.ceil(floor.H / f), math.ceil(floor.W / f)
 
     # Cache key: everything that influences the result.
     h = hashlib.sha1()
+    h.update(floor.image_sha256.encode())
     h.update(np.packbits(floor.base_free).tobytes())
-    h.update(repr((cfg.cell_size, cfg.wall_clearance, cfg.wall_penalty, cfg.target_depth,
-                   floor.s, [(e.room, e.door, e.inward) for e in exits], "v2")).encode())
+    h.update(repr((cfg.cell_size, cfg.wall_clearance, cfg.wall_penalty, cfg.target_depth, body_radius,
+                   floor.s, [(e.room, e.door, e.inward) for e in exits], "v5")).encode())
     cache_dir = cfg.cache_dir if os.path.isabs(cfg.cache_dir) else os.path.join(base_dir, cfg.cache_dir)
     cache_file = os.path.join(cache_dir, f"nav_{h.hexdigest()[:16]}.npz")
-    if os.path.exists(cache_file):
-        data = np.load(cache_file)
-        return [NavigationField(data[f"dist{i}"], data[f"dir{i}"], cell) for i in range(len(exits))]
+    if os.path.exists(cache_file) and not cfg.rebuild_cache:
+        with np.load(cache_file) as data:
+            return [NavigationField(data[f"dist{i}"], data[f"dir{i}"], cell) for i in range(len(exits))]
 
     # Coarse grid: a cell is passable only if all its pixels are floor (preserves thin walls).
     pad_h, pad_w = Hc * f - floor.H, Wc * f - floor.W
@@ -146,7 +176,9 @@ def build_navigation(floor: FloorPlan, exits: List[ExitConfig], cfg: NavConfig,
     sdf_p = np.pad(floor.sdf_open, ((0, pad_h), (0, pad_w)), constant_values=-1.0)
     blocks = free_p.reshape(Hc, f, Wc, f)
     passable = blocks.all(axis=(1, 3))
-    clearance = sdf_p.reshape(Hc, f, Wc, f).max(axis=(1, 3))
+    # Use the minimum clearance throughout the cell for the body-centre graph.
+    clearance = sdf_p.reshape(Hc, f, Wc, f).min(axis=(1, 3))
+    passable &= clearance >= body_radius
     # Cost grows near walls so routes keep some distance from walls and corners.
     closeness = np.clip(1.0 - clearance / cfg.wall_clearance, 0.0, 1.0)
     cost = 1.0 + cfg.wall_penalty * closeness ** 2
@@ -176,11 +208,32 @@ def build_navigation(floor: FloorPlan, exits: List[ExitConfig], cfg: NavConfig,
             raise ValueError(f"Exit '{ex.name}': no target cells found inside its room rectangle")
         D = _dijkstra(passable, cost, sources) * cell
         direction = _descent_direction(D, fallback=np.array([ix, iy], float))
-        fields.append(NavigationField(D, direction, cell))
-        save[f"dist{i}"] = D
+        reachable = np.isfinite(D)
+        _, nearest = cv2.distanceTransformWithLabels(
+            (~reachable).astype(np.uint8), cv2.DIST_L2, 5, labelType=cv2.DIST_LABEL_PIXEL)
+        gy, gx = np.nonzero(reachable)
+        off_grid = ~reachable
+        ny, nx = gy[nearest[off_grid] - 1], gx[nearest[off_grid] - 1]
+        dy, dx = ny - cy[off_grid], nx - cx[off_grid]
+        offset = np.hypot(dx, dy)
+        recovery = np.stack([dx, dy]) / offset
+        # A body pressed just outside the route grid still needs the
+        # tangential approach direction. Steering directly back to a grid
+        # centre there can make the head of a queue push against its tail.
+        direction[:, off_grid] = np.where(offset <= _SQ2, direction[:, ny, nx], recovery)
+        length = _dijkstra(passable, np.ones_like(cost), sources) * cell
+        fields.append(NavigationField(length, direction, cell))
+        save[f"dist{i}"] = length
         save[f"dir{i}"] = direction
 
     os.makedirs(cache_dir, exist_ok=True)
-    np.savez_compressed(cache_file, **save)
+    with NamedTemporaryFile(dir=cache_dir, suffix=".npz", delete=False) as file:
+        staged = file.name
+    try:
+        np.savez_compressed(staged, **save)
+        os.replace(staged, cache_file)
+    finally:
+        if os.path.exists(staged):
+            os.unlink(staged)
     return fields
 
