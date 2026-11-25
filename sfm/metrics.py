@@ -24,10 +24,18 @@ class Recorder:
         c = sim.crowd
         max_contact = float(c.contact.max()) if len(c) else 0.0
         self.peak_contact = max(self.peak_contact, max_contact)
-        n_danger = int(np.sum(c.contact > sim.cfg.sim.danger_force_N)) if len(c) else 0
+        if len(c):
+            crushed = c.contact > sim.cfg.sim.danger_force_N
+            if sim.rooms is not None and crushed.any():
+                px, py = sim.floor.to_px(c.pos)
+                crushed &= (sim.rooms[py, px] == 0)
+            n_danger = int(np.sum(crushed))
+        else:
+            n_danger = 0
+        total_danger_people = int(np.sum(sim.danger_time >= sim.cfg.sim.danger_exposure_s))
         row = {"t": round(sim.t, 4), "remaining": len(c),
                "evacuated": int(np.sum(sim.evac_exit >= 0)), "max_contact_N": round(max_contact, 1),
-               "n_danger": n_danger}
+               "n_danger": n_danger, "total_danger_people": total_danger_people}
         for s in sim.signs:
             row[f"count_{s.idx + 1}"] = s.last_count
             row[f"value_{s.idx + 1}"] = round(s.last_value, 4)
@@ -71,16 +79,22 @@ class Recorder:
                 "events": [{"t": round(e.t, 2), "state": "CLOSED" if e.closed else "OPEN",
                             "value": round(e.count, 4), "reason": e.reason} for e in ev],
             })
+        aet = float(np.mean(times)) if len(times) > 0 else None
         return {
             "n_agents": n,
             "evacuated": int(len(times)),
             "sim_time_s": round(t_end, 2),
             "all_evacuated": bool(len(times) == n),
+            "AET_s": round(aet, 2) if aet is not None else None,
             "T50_s": t_frac(0.5), "T90_s": t_frac(0.9), "T100_s": t_frac(1.0),
             "peak_contact_force_N": round(self.peak_contact, 1),
-            # people squeezed above danger_force_N: peak head-count, and exposure in person-seconds
+            # people squeezed above danger_force_N:
+            #   - total_people_in_danger: unique agents exposed for >= danger_exposure_s seconds
+            #   - peak_agents_in_danger:  max simultaneous head-count at any frame
+            #   - danger_person_seconds:  total cumulative exposure in person-seconds
+            "total_people_in_danger": int(np.sum(sim.danger_time >= sim.cfg.sim.danger_exposure_s)),
             "peak_agents_in_danger": int(max((r["n_danger"] for r in self.rows), default=0)),
-            "danger_person_seconds": round(sum(r["n_danger"] for r in self.rows) * sim.cfg.sim.frame_period, 1),
+            "danger_person_seconds": round(float(np.sum(sim.danger_time)), 1),
             "gates_enabled": sim.cfg.gate.enabled,
             "seed": sim.cfg.sim.seed,
             "exits": signs,

@@ -37,14 +37,19 @@ class Renderer:
 
         # Sensor coverage (what each camera can see).
         if show_sensors:
+            import cv2
             overlay = np.zeros((fl.H, fl.W, 4))
+            ker = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
             for s in sim.signs:
                 rgba = plt.matplotlib.colors.to_rgba(EXIT_COLORS[s.idx % len(EXIT_COLORS)])
-                overlay[s.mask] = (*rgba[:3], 0.18)
-            ax.imshow(overlay, extent=[0, W, H, 0], interpolation="nearest")
+                overlay[s.mask] = (*rgba[:3], 0.38)
+                edge = s.mask ^ cv2.erode(s.mask.astype(np.uint8), ker).astype(bool)
+                overlay[edge] = (*rgba[:3], 0.95)
+            ax.imshow(overlay, extent=[0, W, H, 0], interpolation="nearest", zorder=2)
             for s in sim.signs:
-                ax.plot(*s.camera, marker="^", color=EXIT_COLORS[s.idx % len(EXIT_COLORS)],
-                        markersize=8, markeredgecolor="k")
+                color = EXIT_COLORS[s.idx % len(EXIT_COLORS)]
+                ax.plot(*s.camera, marker="^", color=color,
+                        markersize=9, markeredgecolor="k", zorder=6)
 
         # Gates and labels.
         self.gate_patches, self.labels = [], []
@@ -53,8 +58,8 @@ class Renderer:
             p = Rectangle((x0, y0), x1 - x0, y1 - y0, color="limegreen", zorder=5)
             ax.add_patch(p)
             self.gate_patches.append(p)
-            ly = y0 - 2.5 if s.inward[1] > 0 else y1 + 2.5
-            lbl = ax.text(s.door_center[0] + 4, ly, "", fontsize=9, zorder=6,
+            ly = y0 - 1.5 if s.inward[1] > 0 else y1 + 1.5
+            lbl = ax.text(s.door_center[0] + 1.5, ly, "", fontsize=9, zorder=6,
                           va="center", ha="left",
                           bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="0.5", alpha=0.85))
             self.labels.append(lbl)
@@ -99,15 +104,26 @@ class Renderer:
         g = sim.cfg.gate
         for s, p, lbl in zip(sim.signs, self.gate_patches, self.labels):
             p.set_color("red" if s.closed else "limegreen")
-            state = "CLOSED" if s.closed else "OPEN"
+            state = "RED" if s.closed else "GREEN"
             val = f" ({s.last_value:.2f}/m2)" if sim.cfg.sensor.metric == "density" else ""
             lbl.set_text(f"E{s.idx + 1}: {s.last_count:2d} seen{val} | {state}")
             lbl.get_bbox_patch().set_edgecolor("red" if s.closed else "0.5")
         evac = int(np.sum(sim.evac_exit >= 0))
-        self.title.set_text(f"Social Force Model evacuation  |  t = {sim.t:6.1f} s  |  "
-                            f"inside: {len(c)}  evacuated: {evac}/{sim.n_total}  |  "
-                            f"gate closes > {g.close_above:g}, reopens <= {g.reopen_at_most:g} "
-                            f"after {g.min_closed_time:.0f} s" + ("" if g.enabled else "  [GATES DISABLED]"))
+        total_danger = int(np.sum(sim.danger_time >= sim.cfg.sim.danger_exposure_s))
+        if len(c):
+            crushed = c.contact > sim.cfg.sim.danger_force_N
+            if sim.rooms is not None and crushed.any():
+                px, py = sim.floor.to_px(c.pos)
+                crushed &= (sim.rooms[py, px] == 0)
+            now_danger = int(np.sum(crushed))
+        else:
+            now_danger = 0
+        self.title.set_text(
+            f"SFM Evacuation  |  t = {sim.t:5.1f} s  |  "
+            f"inside: {len(c)}  evacuated: {evac}/{sim.n_total}  |  "
+            f"in danger (>={sim.cfg.sim.danger_exposure_s:g}s @ >{sim.cfg.sim.danger_force_N:g}N): {total_danger} (now: {now_danger})"
+            + ("" if g.enabled else "  [GATES OFF]")
+        )
 
         if self.ax_ts is not None:
             self.ts_t.append(sim.t)

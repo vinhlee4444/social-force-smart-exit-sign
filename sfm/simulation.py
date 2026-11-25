@@ -53,8 +53,10 @@ class Simulation:
         self.t = 0.0
         self.evac_time = np.full(n, np.nan)       # by agent id
         self.evac_exit = np.full(n, -1)
+        self.danger_time = np.zeros(n)            # cumulative seconds each agent (by id) spent > danger_force_N
         self.recorder = Recorder(self)
         self._sense_and_control()                  # initial reading at t = 0
+        self.crowd.update_targets(self.signs, self.floor, self.cfg.gate.commit_radius)
         self.recorder.record()
 
     # ------------------------------------------------------------------ spawning
@@ -115,7 +117,16 @@ class Simulation:
     def step(self) -> None:
         if self.step_idx % self.sensor_every == 0 and self.step_idx > 0:
             self._sense_and_control()
+        if self.step_idx % self.frame_every == 0:
+            self.crowd.update_targets(self.signs, self.floor, self.cfg.gate.commit_radius)
         self.crowd.step(self.floor, self.dt)
+        if len(self.crowd):
+            crushed = self.crowd.contact > self.cfg.sim.danger_force_N
+            if self.rooms is not None and crushed.any():
+                px, py = self.floor.to_px(self.crowd.pos)
+                crushed &= (self.rooms[py, px] == 0)   # count crush danger in corridors / exit bottlenecks only
+            if crushed.any():
+                self.danger_time[self.crowd.ids[crushed]] += self.dt
         for s in self.signs:
             ev = s.evacuated(self.crowd.pos)
             if ev.any():

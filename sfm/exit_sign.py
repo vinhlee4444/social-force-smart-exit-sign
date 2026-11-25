@@ -54,7 +54,7 @@ class GateController:
 
     @property
     def state(self) -> str:
-        return "CLOSED" if self.closed else "OPEN"
+        return "RED" if self.closed else "GREEN"
 
     def update(self, t: float, value: float) -> bool:
         """Feed one sensor reading. Returns True if the gate changed state (closed or reopened)."""
@@ -131,33 +131,67 @@ class ExitSign:
 
     # ------------------------------------------------------------------ sensing
     def _visible_mask(self) -> np.ndarray:
-        """Floor pixels the camera can actually see: inside the cone, between the blind
-        zone and the maximum range, with a clear line of sight."""
+        """Floor pixels the camera can actually see: inside its 3D viewing frustum projected
+        onto the floor (a trapezoid widening from the door into the corridor), capped by
+        `sensor.radius`, with a clear line of sight."""
         fl, s = self.floor, self.floor.s
-        R_px = min(self.sensor.radius, self.max_range) / s
-        near_px = self.min_range / s
+        sc = self.sensor
+        R_m = min(sc.radius, self.max_range)
+        R_px = R_m / s
         cx, cy = self.camera / s                                  # camera, pixel units
-        x0, x1 = int(max(0, cx - R_px)), int(min(fl.W - 1, cx + R_px))
-        y0, y1 = int(max(0, cy - R_px)), int(min(fl.H - 1, cy + R_px))
+        # Bounding box in pixels (note: lateral width in 3D can exceed R_m when mount_height is large)
+        max_lat_m = (R_m + sc.mount_height) * np.tan(np.radians(min(sc.fov_deg, 170.0) / 2)) if sc.fov_deg < 360.0 else R_m
+        span_px = max(R_px, max_lat_m / s) + 2
+        x0, x1 = int(max(0, cx - span_px)), int(min(fl.W - 1, cx + span_px))
+        y0, y1 = int(max(0, cy - span_px)), int(min(fl.H - 1, cy + span_px))
         ys, xs = np.mgrid[y0:y1 + 1, x0:x1 + 1]
         px, py = xs + 0.5, ys + 0.5                               # pixel centres
-        d2 = (px - cx) ** 2 + (py - cy) ** 2
-        inside = (d2 <= R_px ** 2) & (d2 >= near_px ** 2) & fl.base_free[ys, xs]
+
+        dx_m = (px - cx) * s
+        dy_m = (py - cy) * s
+        d2_m = dx_m ** 2 + dy_m ** 2
+        inside = (d2_m <= sc.radius ** 2) & fl.base_free[ys, xs]
+
         # The sign faces the hallway: exclude the exit room itself.
         rx0, ry0, rx1, ry1 = self.cfg.room
         in_exit_room = (xs >= rx0) & (xs <= rx1) & (ys >= ry0) & (ys <= ry1)
         inside &= ~in_exit_room
-        if self.sensor.fov_deg < 360.0:                           # keep only the cone
-            ex, ey = px - cx, py - cy
-            cosang = (ex * self.facing[0] + ey * self.facing[1]) / (np.sqrt(d2) + 1e-9)
-            inside &= cosang >= np.cos(np.radians(self.sensor.fov_deg / 2))
+
+        if sc.fov_deg >= 360.0:
+            # Legacy omnidirectional circle mode
+            inside &= d2_m >= self.min_range ** 2
+        elif sc.use_min_range and sc.mount_height > 0 and sc.vfov_deg > 0:
+            # True 3D tilted camera frustum projected onto the floor plane (z = -mount_height).
+            # Measure forward distance `u` from the corridor face of the door frame (where the sign hangs).
+            fx, fy = self.facing[0], self.facing[1]
+            u = dx_m * fx + dy_m * fy + 0.2                       # forward horizontal distance from door wall (m)
+            v = -dx_m * fy + dy_m * fx                            # lateral horizontal offset (m)
+            theta = np.radians(sc.tilt_deg)
+            h = sc.mount_height
+            z_cam = u * np.cos(theta) + h * np.sin(theta)         # depth along tilted optical axis
+            y_cam = h * np.cos(theta) - u * np.sin(theta)         # vertical camera-frame coordinate
+            tan_h = np.tan(np.radians(sc.fov_deg / 2.0))
+            tan_v = np.tan(np.radians(sc.vfov_deg / 2.0))
+            inside &= (
+                (u >= 0.0)
+                & (z_cam > 1e-6)
+                & (np.abs(y_cam) <= z_cam * tan_v)
+                & (np.abs(v) <= z_cam * tan_h)
+            )
+        else:
+            # 2D flat cone fallback when mounting geometry is disabled (use_min_range=False)
+            fx, fy = self.facing[0], self.facing[1]
+            cosang = (dx_m * fx + dy_m * fy) / (np.sqrt(d2_m) + 1e-9)
+            inside &= cosang >= np.cos(np.radians(sc.fov_deg / 2.0))
+
         mask = np.zeros((fl.H, fl.W), bool)
         tx, ty = px[inside], py[inside]
-        if not self.sensor.line_of_sight:
+        if not sc.line_of_sight:
             mask[ys[inside], xs[inside]] = True
             return mask
         # Ray-march from the camera to every candidate pixel (2 samples per pixel length).
-        n_samp = int(np.ceil(2 * R_px)) + 1
+        max_dist_px = float(np.max(np.hypot(tx - cx, ty - cy))) if len(tx) else 1.0
+        n_samp = int(np.ceil(2 * max_dist_px)) + 1
         visible = np.ones(len(tx), bool)
         free = fl.base_free
         for k in range(1, n_samp):

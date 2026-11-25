@@ -61,17 +61,25 @@ class FloorPlan:
                 x0, y0, x1, y1 = ex.door
                 if ex.inward[1] != 0:                # horizontal door gap (wall runs along x)
                     c = (x0 + x1) // 2
-                    lo, hi = c - w_px // 2, c - w_px // 2 + w_px - 1
+                    lo = max(x0, c - w_px // 2)
+                    hi = min(x1, c - w_px // 2 + w_px - 1)
                     free[y0:y1 + 1, x0:lo] = False
                     free[y0:y1 + 1, hi + 1:x1 + 1] = False
                 else:                                # vertical door gap (wall runs along y)
                     c = (y0 + y1) // 2
-                    lo, hi = c - w_px // 2, c - w_px // 2 + w_px - 1
+                    lo = max(y0, c - w_px // 2)
+                    hi = min(y1, c - w_px // 2 + w_px - 1)
                     free[y0:lo, x0:x1 + 1] = False
                     free[hi + 1:y1 + 1, x0:x1 + 1] = False
         self.base_free = free
         self.free = free
         self.H, self.W = free.shape
+        # The two large interior black rectangles (left atrium x=255..445, y=132..553 and
+        # right atrium x=920..1082, y=133..554) are unwalkable open spaces, not solid walls,
+        # so evacuees in the surrounding corridors can see exit signs across them.
+        self.see_through = free.copy()
+        self.see_through[132:min(554, self.H), 255:min(446, self.W)] = True
+        self.see_through[133:min(555, self.H), 920:min(1083, self.W)] = True
         self.width_m = self.W * self.s
         self.height_m = self.H * self.s
 

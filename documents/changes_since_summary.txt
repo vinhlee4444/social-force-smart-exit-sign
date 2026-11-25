@@ -1,0 +1,129 @@
+================================================================================
+CHANGELOG: CHANGES MADE SINCE THE INITIAL VERSION OF project_summary.txt
+================================================================================
+
+1. EVACUEE ROUTE-CHOICE & REROUTING LOGIC
+-----------------------------------------
+* `sfm/config.py` (`GateConfig`, lines 127-130):
+  - Added `commit_radius: float = 5.0` (metres). Agents within this distance of
+    an exit door commit to exiting through it even if its exit sign is RED.
+  - Lowered `min_closed_time` from `10.0` s to `4.0` s so exit signs turn back
+    to GREEN promptly once a doorway queue clears.
+* `sfm/floorplan.py` (`FloorPlan.__init__`, lines 77-82) & `sfm/crowd.py` (`Crowd._can_see_sign`, line 67):
+  - Added `floor.see_through` marking the two interior open courtyard voids
+    (left atrium `x=255..445, y=132..553` and right atrium `x=920..1082, y=133..554`)
+    as unwalkable (`base_free == False`) but transparent to line-of-sight
+    (`see_through == True`) so evacuees in the corridors at `E2` can see `E4`
+    turn GREEN across the right open space (and vice-versa between `E1` and `E3`).
+* `sfm/crowd.py` (`Crowd._can_see_sign` & `Crowd.update_targets`, lines 59-140):
+  - Added `_can_see_sign(pos, sign_pos, floor)`: Ray-marches from each agent's
+    position to `sign.camera` on `floor.base_free` to test unobstructed
+    line-of-sight (ignoring wall pixels within ~6 px / 0.3 m of the agent body).
+  - Added `update_targets(signs, floor, commit_radius=5.0)`:
+      1. If an agent is within `commit_radius` (5.0 m Euclidean and <= 7.0 m
+         walking distance) of their current or nearest door, they exit through
+         that door regardless of the LED state.
+      2. If outside `commit_radius` and their nearest door is GREEN (`OPEN`),
+         they run to the nearest door.
+      3. If outside `commit_radius` and their nearest door is RED (`CLOSED`),
+         they check line-of-sight to all GREEN exit signs and run to the nearest
+         visible GREEN door (or keep their current GREEN target if no GREEN sign
+         is currently in line-of-sight).
+* `sfm/simulation.py` (`Simulation.__init__` line 59 & `Simulation.step` lines 119-120):
+  - Calls `self.crowd.update_targets(self.signs, self.floor, self.cfg.gate.commit_radius)`
+    at `t = 0` and every frame (`frame_period = 0.1 s`).
+* `run.py` (lines 52-53, 92):
+  - Added `--commit-radius` CLI option.
+
+
+2. CAMERA FOV VISUALIZATION & PREVIEW SCRIPT
+--------------------------------------------
+* `sfm/render.py` (`Renderer.__init__`, lines 39-53):
+  - Increased camera FOV overlay opacity from `0.18` to `0.38`.
+  - Added a 1-px morphological perimeter outline (`alpha = 0.95`) around each
+    camera's visible floor mask `s.mask`.
+* `preview_map.py` (new file):
+  - Standalone script that loads `Config()`, `FloorPlan`, and `ExitSign` and
+    saves a high-resolution preview image (`map_fov.png`) of the floor plan and
+    all 4 camera FOV zones in under 1 second.
+
+
+3. 3D TILTED CAMERA FRUSTUM PROJECTION FIX
+------------------------------------------
+* `sfm/exit_sign.py` (`ExitSign._visible_mask`, lines 133-203):
+  - Fixed a 3D-to-2D projection bug where `fov_deg` was previously applied as a
+    flat 2D floor cone pinching to width 0 at `(cx, cy)`.
+  - Replaced with true 3D tilted camera frustum projection onto the floor plane
+    at depth `z = -mount_height` and downward pitch `theta = tilt_deg`:
+      * `Z_cam = u * cos(theta) + h * sin(theta)`
+      * `Y_cam = h * cos(theta) - u * sin(theta)`
+      * `|Y_cam| <= Z_cam * tan(VFOV / 2)`
+      * `|v| <= Z_cam * tan(HFOV / 2)`
+    where `u` is measured from the corridor face of the door frame (`+0.2 m`).
+    This projects a realistic trapezoidal floor footprint that covers the full
+    width of the exit door when mounted high and tilted downward.
+
+
+4. PEDESTRIAN BODY RADIUS & PERSONAL-SPACE CALIBRATION (SFPE HANDBOOK)
+----------------------------------------------------------------------
+* `sfm/config.py` (`PedestrianConfig` line 63 & `ForceConfig` line 74):
+  - Updated `PedestrianConfig.radius` to `0.22 m` (`0.44 m` circle diameter,
+    `0.152 m^2` area).
+  - Updated `ForceConfig.B` from `0.08 m` to `0.04 m` so equilibrium interpersonal
+    spacing allows bottleneck crowd densities to reach `>= 3.8 people/m^2`.
+
+
+5. PANIC PUSHING DYNAMICS & LETHAL CRUSH EXPOSURE TRACKER
+---------------------------------------------------------
+* `sfm/config.py`:
+  - `PedestrianConfig` (lines 64-66): Increased desired speed to `v0_min = 1.8`,
+    `v0_max = 2.5` m/s and lowered relaxation time to `tau = 0.35` s.
+  - `ForceConfig` (lines 73, 78, 81): Lowered psychological repulsion `A` from
+    `2000.0` N to `600.0` N so panicked crowds push into physical contact; added
+    panic jostling `noise_std = 20.0` N; set `kappa = 4.0e4` kg/(m*s).
+  - `SimConfig` (lines 149-151): Added `danger_exposure_s: float = 3.0` s
+    (cumulative time an agent must experience `> danger_force_N = 1000.0` N to
+    be counted in `total_people_in_danger`).
+* `sfm/crowd.py` (`Crowd.compute_forces` & `Crowd.step`, lines 204-247):
+  - Clamped tangential friction coefficient `np.minimum(fc.kappa * g, 3000.0)`
+    to prevent explicit-Euler tangential velocity overshoot at `dt = 0.01 s`.
+  - Added inelastic normal collision damping (`damp_n = 2000.0 * dvn` and
+    `damp_w = 2000.0 * v_into_wall` when bodies overlap, `g > 0`) so colliding
+    agents do not bounce off each other like undamped springs.
+  - Added a `0.3 s` exponential moving average (EMA) filter on per-agent
+    physical compression force (`self.contact`, updated from `self.raw_contact`
+    with `alpha = dt / (0.3 + dt)` in `Crowd.step`) so transient 0.01 s shoulder
+    bumps do not cause the `(now: ...)` danger counter to flicker.
+* `sfm/simulation.py` (`Simulation.__init__` line 56 & `Simulation.step` lines 122-128):
+  - Added `self.danger_time = np.zeros(n)` tracking cumulative seconds each
+    agent ID spends under physical compression `contact > danger_force_N`
+    specifically outside classrooms (`self.rooms[py, px] == 0`, i.e., in the
+    corridors and exit bottleneck zones).
+* `sfm/metrics.py` (`Recorder.record` lines 27-38 & `Recorder.summary` lines 82-95):
+  - Restricted `n_danger` to corridor/exit-bottleneck agents (`rooms[py, px] == 0`).
+  - Added `total_danger_people` column to `timeseries.csv`,
+    `total_people_in_danger` (TPID) field to `summary.json`, and
+    `AET_s` (Average Evacuation Time across all evacuated agents) to `summary.json`.
+* `sfm/render.py` (`Renderer.update`, lines 105-128) & `sfm/exit_sign.py` (line 57):
+  - Changed exit sign display labels from `OPEN` / `CLOSED` to `GREEN` / `RED`.
+  - Updated the `.mp4` top title bar to display corridor/exit crush counts:
+    `in danger (>=3s @ >1000N): <total_danger> (now: <now_danger>)`.
+* `run.py` (lines 61-64, 89-90, 144-146):
+  - Added `--danger-force` and `--danger-time` CLI flags and printed
+    `total people in danger` in the summary output.
+* `scenarios.py`:
+  - Configured the 6 ordered Floor-2 occupancy scenarios (excluding the 4 small
+    12.6 m^2 restrooms):
+      1. `scen1_sparse`: ~200 people across the building.
+      2. `scen2_normal`: 15% of classrooms empty (0), 15% low occupancy (2-5),
+         70% normal occupancy (70-100% of load: 21-30 small, 28-40 large).
+      3. `scen3_asymmetric_left`: ~80-85% of population in left half (scattered
+         across empty, low, and normal rooms); ~15-20% in right half.
+      4. `scen4_asymmetric_right`: ~80-85% of population in right half (including
+         the right hall and right/central classrooms); ~15-20% in left half.
+      5. `scen5_asymmetric_top`: ~80-85% of population in top half (plus
+         normal-scenario random load in the right hall); ~15-20% in bottom half.
+      6. `scen6_full_house`: 100% of classrooms at normal/full occupancy.
+  - Runs 5 seeds (0..4) per (scenario, gate state), saves all 60 `.csv` and
+    60 `.json` files to `results/benchmark/runs/`, renders 12 `.mp4` videos to
+    `results/benchmark/videos/`, and prints the averaged TET, AET, and TPID table.

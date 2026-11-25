@@ -49,6 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="fail-safe: reopen after this many seconds whatever the crowd")
     p.add_argument("--min-open", type=float, default=d.gate.min_open_time,
                    help="seconds a gate stays open after reopening (anti-flicker)")
+    p.add_argument("--commit-radius", type=float, default=d.gate.commit_radius,
+                   help="metres: within this radius of a door, agents exit through it despite a RED sign")
     p.add_argument("--period", type=float, default=d.sensor.period, help="seconds between camera readings")
     p.add_argument("--count-error", type=float, default=d.sensor.count_error,
                    help="relative std of the AI people count (0 = perfect)")
@@ -56,6 +58,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-los", action="store_true", help="count through walls (plain circle)")
     p.add_argument("--t-max", type=float, default=d.sim.t_max)
     p.add_argument("--dt", type=float, default=d.sim.dt)
+    p.add_argument("--danger-force", type=float, default=d.sim.danger_force_N,
+                   help="crushing force threshold in Newtons to count as lethal/dangerous")
+    p.add_argument("--danger-time", type=float, default=d.sim.danger_exposure_s,
+                   help="seconds an agent must experience > --danger-force to count in total_people_in_danger")
     p.add_argument("--map", default=d.map.image_path)
     p.add_argument("--door-width", type=float, default=d.map.exit_door_width_m,
                    help="narrow every exit door to this clear width in metres (default: from config)")
@@ -80,6 +86,8 @@ def make_config(a):
     cfg.sim.seed = a.seed
     cfg.sim.dt = a.dt
     cfg.sim.t_max = a.t_max
+    cfg.sim.danger_force_N = a.danger_force
+    cfg.sim.danger_exposure_s = a.danger_time
     if a.no_gates:
         cfg.gate.enabled = False
     cfg.gate.close_above = a.close_above
@@ -87,6 +95,7 @@ def make_config(a):
     cfg.gate.min_closed_time = a.min_closed
     cfg.gate.max_closed_time = a.max_closed
     cfg.gate.min_open_time = a.min_open
+    cfg.gate.commit_radius = a.commit_radius
     cfg.sensor.period = a.period
     cfg.sensor.count_error = a.count_error
     cfg.sensor.radius = a.radius
@@ -138,7 +147,9 @@ def main(argv=None) -> int:
         print(f"  {e['name']:16s} evacuated {e['evacuated']:4d} | closures {e['closures']:2d} | "
               f"closed {e['total_closed_s']:6.1f} s | max count {e['max_count']} | "
               f"max value {e['max_value']:g} | area {e['visible_area_m2']} m2")
-    print(f"  peak agents in danger {s['peak_agents_in_danger']} | danger exposure {s['danger_person_seconds']} person-s")
+    print(f"  total people in danger (>={cfg.sim.danger_exposure_s:g}s) {s['total_people_in_danger']} | "
+          f"peak simultaneous in danger {s['peak_agents_in_danger']} | "
+          f"danger exposure {s['danger_person_seconds']} person-s")
     print(f"results in {out}")
     return 0
 
