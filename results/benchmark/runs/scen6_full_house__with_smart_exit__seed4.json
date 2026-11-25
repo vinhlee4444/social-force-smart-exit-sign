@@ -1,0 +1,97 @@
+{
+  "n_agents": 845,
+  "evacuated": 845,
+  "sim_time_s": 33.71,
+  "all_evacuated": true,
+  "AET_s": 14.6,
+  "T50_s": 13.97,
+  "T90_s": 23.150000000000002,
+  "T100_s": 33.7,
+  "peak_contact_force_N": 7494.4,
+  "total_people_in_danger": 15,
+  "peak_agents_in_danger": 82,
+  "danger_person_seconds": 442.5,
+  "gates_enabled": true,
+  "seed": 4,
+  "exits": [
+    {
+      "name": "E1 top-left",
+      "evacuated": 230,
+      "closures": 1,
+      "total_closed_s": 11.0,
+      "max_count": 44,
+      "max_value": 3.7342,
+      "visible_area_m2": 10.6,
+      "events": [
+        {
+          "t": 13.0,
+          "state": "CLOSED",
+          "value": 3.5459,
+          "reason": "threshold"
+        },
+        {
+          "t": 24.0,
+          "state": "OPEN",
+          "value": 0.6276,
+          "reason": "crowd_cleared"
+        }
+      ]
+    },
+    {
+      "name": "E2 top-right",
+      "evacuated": 176,
+      "closures": 1,
+      "total_closed_s": 6.0,
+      "max_count": 40,
+      "max_value": 3.5463,
+      "visible_area_m2": 11.0,
+      "events": [
+        {
+          "t": 15.0,
+          "state": "CLOSED",
+          "value": 3.5463,
+          "reason": "threshold"
+        },
+        {
+          "t": 21.0,
+          "state": "OPEN",
+          "value": 0.485,
+          "reason": "crowd_cleared"
+        }
+      ]
+    },
+    {
+      "name": "E3 bottom-left",
+      "evacuated": 233,
+      "closures": 1,
+      "total_closed_s": 10.0,
+      "max_count": 54,
+      "max_value": 4.8722,
+      "visible_area_m2": 10.5,
+      "events": [
+        {
+          "t": 12.0,
+          "state": "CLOSED",
+          "value": 4.1398,
+          "reason": "threshold"
+        },
+        {
+          "t": 22.0,
+          "state": "OPEN",
+          "value": 0.6687,
+          "reason": "crowd_cleared"
+        }
+      ]
+    },
+    {
+      "name": "E4 bottom-right",
+      "evacuated": 206,
+      "closures": 0,
+      "total_closed_s": 0.0,
+      "max_count": 25,
+      "max_value": 2.4403,
+      "visible_area_m2": 9.4,
+      "events": []
+    }
+  ]
+}

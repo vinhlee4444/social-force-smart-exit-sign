@@ -1,0 +1,71 @@
+{
+  "n_agents": 518,
+  "evacuated": 518,
+  "sim_time_s": 30.77,
+  "all_evacuated": true,
+  "AET_s": 13.87,
+  "T50_s": 13.27,
+  "T90_s": 21.35,
+  "T100_s": 30.76,
+  "peak_contact_force_N": 5257.5,
+  "total_people_in_danger": 0,
+  "peak_agents_in_danger": 25,
+  "danger_person_seconds": 132.6,
+  "gates_enabled": true,
+  "seed": 1,
+  "exits": [
+    {
+      "name": "E1 top-left",
+      "evacuated": 213,
+      "closures": 1,
+      "total_closed_s": 10.0,
+      "max_count": 43,
+      "max_value": 3.797,
+      "visible_area_m2": 10.6,
+      "events": [
+        {
+          "t": 12.0,
+          "state": "CLOSED",
+          "value": 3.5773,
+          "reason": "threshold"
+        },
+        {
+          "t": 22.0,
+          "state": "OPEN",
+          "value": 0.5335,
+          "reason": "crowd_cleared"
+        }
+      ]
+    },
+    {
+      "name": "E2 top-right",
+      "evacuated": 137,
+      "closures": 0,
+      "total_closed_s": 0.0,
+      "max_count": 18,
+      "max_value": 1.5458,
+      "visible_area_m2": 11.0,
+      "events": []
+    },
+    {
+      "name": "E3 bottom-left",
+      "evacuated": 143,
+      "closures": 0,
+      "total_closed_s": 0.0,
+      "max_count": 19,
+      "max_value": 1.6878,
+      "visible_area_m2": 10.5,
+      "events": []
+    },
+    {
+      "name": "E4 bottom-right",
+      "evacuated": 25,
+      "closures": 0,
+      "total_closed_s": 0.0,
+      "max_count": 4,
+      "max_value": 0.2829,
+      "visible_area_m2": 9.4,
+      "events": []
+    }
+  ]
+}
