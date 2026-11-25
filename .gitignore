@@ -10,7 +10,6 @@ __pycache__/
 
 # Generated navigation caches & simulation outputs
 cache/
-results/
 
 # OS / IDE files
 .DS_Store
