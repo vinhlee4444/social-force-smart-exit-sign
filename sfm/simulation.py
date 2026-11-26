@@ -56,7 +56,11 @@ class Simulation:
         self.danger_time = np.zeros(n)            # cumulative seconds each agent (by id) spent > danger_force_N
         self.recorder = Recorder(self)
         self._sense_and_control()                  # initial reading at t = 0
-        self.crowd.update_targets(self.signs, self.floor, self.cfg.gate.commit_radius)
+        g = self.cfg.gate
+        self.crowd.update_targets(
+            self.signs, self.floor, g.commit_radius, self.t,
+            g.reaction_delay_min, g.reaction_delay_max, g.current_door_preference,
+        )
         self.recorder.record()
 
     # ------------------------------------------------------------------ spawning
@@ -118,7 +122,11 @@ class Simulation:
         if self.step_idx % self.sensor_every == 0 and self.step_idx > 0:
             self._sense_and_control()
         if self.step_idx % self.frame_every == 0:
-            self.crowd.update_targets(self.signs, self.floor, self.cfg.gate.commit_radius)
+            g = self.cfg.gate
+            self.crowd.update_targets(
+                self.signs, self.floor, g.commit_radius, self.t,
+                g.reaction_delay_min, g.reaction_delay_max, g.current_door_preference,
+            )
         self.crowd.step(self.floor, self.dt)
         if len(self.crowd):
             crushed = self.crowd.contact > self.cfg.sim.danger_force_N

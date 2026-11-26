@@ -42,6 +42,7 @@ class Crowd:
         self.target = np.zeros(n, dtype=np.int64)                  # index of the nearest exit each agent heads for
         self.contact = np.zeros(n)                                 # N, smoothed compression force felt (0.3 s EMA)
         self.raw_contact = np.zeros(n)                             # N, instantaneous compression force at current step
+        self.react_at = np.full(n, np.nan)                         # s, timestamp when agent finishes reacting to a RED sign
         self._pairs_i = self._pairs_j = None
         self._pos_at_build: Optional[np.ndarray] = None
         if self.nav is not None and n > 0:
@@ -80,27 +81,40 @@ class Crowd:
         return ok
 
     def update_targets(self, signs: List["ExitSign"], floor: FloorPlan,
-                       commit_radius: float = 5.0) -> None:
-        """Update each agent's target exit based on door proximity and visible exit sign LEDs:
+                       commit_radius: float = 5.0, t: float = 0.0,
+                       reaction_delay_min: float = 0.8,
+                       reaction_delay_max: float = 2.0,
+                       current_door_preference: float = 0.30) -> None:
+        """Update each agent's target exit based on door proximity, visible exit sign LEDs,
+        cognitive reaction delay, and Pathfinder's Current Door Preference hysteresis:
         1. If within `commit_radius` (m) of the door: exit through that door despite the LED signal.
-        2. If the nearest door is GREEN: run to the nearest door.
-        3. If the nearest door is RED: run to the nearest visible GREEN door.
+        2. Apply Current Door Preference hysteresis `(1 - current_door_preference)` to each agent's
+           currently selected target so agents do not ping-pong back and forth mid-corridor when
+           a previously RED exit reopens behind them.
+        3. If the preferred/current door is RED and a GREEN door is in line-of-sight: start an
+           individual reaction timer `U(reaction_delay_min, reaction_delay_max)` and switch to the
+           nearest visible GREEN door once the timer expires.
         """
         n = len(self)
         if n == 0 or self.nav is None or len(signs) == 0:
             return
         D = np.stack([nf.distance(self.pos) for nf in self.nav], axis=1)
         nearest = np.argmin(D, axis=1)
+
+        # Pathfinder Current Door Preference hysteresis: discount distance to the currently chosen target
+        D_pref = D.copy()
+        D_pref[np.arange(n), self.target] *= max(0.0, 1.0 - current_door_preference)
+        preferred = np.argmin(D_pref, axis=1)
+
         closed = np.array([s.closed for s in signs], dtype=bool)
         if not closed.any():
-            self.target = nearest
+            self.target = preferred
+            self.react_at[:] = np.nan
             return
 
         # Distance from each agent to each door center (and walking distance along the floor)
         door_centers = np.array([s.door_center for s in signs])
         d_euclid = np.linalg.norm(self.pos[:, None, :] - door_centers[None, :, :], axis=2)
-        # An agent is within commit_radius of a door if within commit_radius walking distance
-        # (or Euclidean distance with line-of-sight so it cannot trigger through classroom walls)
         d_cur_walk = D[np.arange(n), self.target]
         d_near_walk = D[np.arange(n), nearest]
         d_cur_euc = d_euclid[np.arange(n), self.target]
@@ -109,19 +123,22 @@ class Crowd:
         commit_cur = (d_cur_euc <= commit_radius) & (d_cur_walk <= commit_radius + 2.0)
         commit_near = (~commit_cur) & (d_near_euc <= commit_radius) & (d_near_walk <= commit_radius + 2.0)
         self.target[commit_near] = nearest[commit_near]
+        self.react_at[commit_cur | commit_near] = np.nan
 
         undecided = ~(commit_cur | commit_near)
         if not undecided.any():
             return
         idx_u = np.flatnonzero(undecided)
-        near_u = nearest[idx_u]
+        pref_u = preferred[idx_u]
 
-        # If nearest door is GREEN, head to the nearest door
-        near_green = ~closed[near_u]
-        self.target[idx_u[near_green]] = near_u[near_green]
+        # If preferred door (accounting for Current Door Preference hysteresis) is GREEN, use it
+        pref_green = ~closed[pref_u]
+        idx_green = idx_u[pref_green]
+        self.target[idx_green] = pref_u[pref_green]
+        self.react_at[idx_green] = np.nan
 
-        # If nearest door is RED, head to the nearest visible GREEN door
-        idx_red = idx_u[~near_green]
+        # If preferred door is RED, look for the nearest visible GREEN door after reaction delay
+        idx_red = idx_u[~pref_green]
         if len(idx_red) == 0 or closed.all():
             return
         pos_r = self.pos[idx_red]
@@ -130,11 +147,21 @@ class Crowd:
             if not closed[k]:
                 vis_green[:, k] = self._can_see_sign(pos_r, sg.camera, floor)
 
-        D_red = D[idx_red].copy()
+        D_red = D_pref[idx_red].copy()
         D_red[~vis_green] = np.inf
         has_vis_green = np.isfinite(D_red).any(axis=1)
         if has_vis_green.any():
-            self.target[idx_red[has_vis_green]] = np.argmin(D_red[has_vis_green], axis=1)
+            idx_vis = idx_red[has_vis_green]
+            need_timer = np.isnan(self.react_at[idx_vis])
+            if need_timer.any():
+                n_new = int(need_timer.sum())
+                delays = self.rng.uniform(reaction_delay_min, reaction_delay_max, size=n_new)
+                self.react_at[idx_vis[need_timer]] = t + delays
+            ready = self.react_at[idx_vis] <= t + 1e-9
+            if ready.any():
+                best_green = np.argmin(D_red[has_vis_green][ready], axis=1)
+                self.target[idx_vis[ready]] = best_green
+                self.react_at[idx_vis[ready]] = np.nan
 
         # If no GREEN door is visible yet (e.g. agent is still inside a classroom):
         # keep current target if it is GREEN; otherwise head toward nearest exit to reach the corridor
@@ -158,7 +185,7 @@ class Crowd:
         """Remove agents where mask is True. Returns their ids."""
         gone = self.ids[mask]
         keep = ~mask
-        for name in ("pos", "vel", "v0", "radius", "mass", "ids", "target", "contact", "raw_contact"):
+        for name in ("pos", "vel", "v0", "radius", "mass", "ids", "target", "contact", "raw_contact", "react_at"):
             setattr(self, name, getattr(self, name)[keep])
         self._pos_at_build = None                                  # force neighbour-list rebuild
         return gone

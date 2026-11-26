@@ -122,12 +122,15 @@ class GateConfig:
     # Thresholds are in the unit of SensorConfig.metric:
     #   density -> people / m2 of the camera's visible floor (~26 m2). 0.7 /m2 ~ 19 people in view.
     #   count   -> people
-    close_above: float = 3.5               # "closed" when value > close_above
+    close_above: float = 1.9               # "closed" when value > close_above
     reopen_at_most: float = 1.0            # reopen when value <= reopen_at_most ...
     min_closed_time: float = 4.0           # ... AND the gate has been closed >= this long
     max_closed_time: float = 20.0          # fail-safe: reopen after this long whatever the crowd does
     min_open_time: float = 5.0             # after (re)opening, stay open at least this long (anti-flicker)
     commit_radius: float = 5.0             # m, agents within this radius of a door exit through it despite a RED sign
+    reaction_delay_min: float = 0.8        # s, min cognitive reaction delay after seeing a RED sign (Galea et al., 2014)
+    reaction_delay_max: float = 2.0        # s, max cognitive reaction delay after seeing a RED sign
+    current_door_preference: float = 0.30  # Pathfinder Current Door Preference hysteresis factor (prevents ping-ponging)
 
 
 @dataclass

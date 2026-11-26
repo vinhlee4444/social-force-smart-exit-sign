@@ -272,10 +272,11 @@ def spawn_positions_for_scenario(cfg: Config, floor: FloorPlan, nav: List[Naviga
 
 def run_single_sim(args) -> Dict:
     """Run one headless simulation and write its .csv and .json files."""
-    sc_key, gate_key, seed, out_dir = args
+    sc_key, gate_key, seed, out_dir, close_above = args
     cfg = Config()
     cfg.sim.seed = seed
     cfg.gate.enabled = GATE_MODES[gate_key]
+    cfg.gate.close_above = close_above
 
     sim_tmp = Simulation(cfg, BASE, initial_positions=np.zeros((1, 2)), verbose=False)
     pos, rooms = spawn_positions_for_scenario(cfg, sim_tmp.floor, sim_tmp.nav, sc_key, seed)
@@ -318,10 +319,11 @@ def render_single_video(args) -> str:
     matplotlib.use("Agg")
     from sfm.render import Renderer
 
-    sc_key, gate_key, seed, video_dir, fps, dpi = args
+    sc_key, gate_key, seed, video_dir, fps, dpi, close_above = args
     cfg = Config()
     cfg.sim.seed = seed
     cfg.gate.enabled = GATE_MODES[gate_key]
+    cfg.gate.close_above = close_above
 
     sim_tmp = Simulation(cfg, BASE, initial_positions=np.zeros((1, 2)), verbose=False)
     pos, rooms = spawn_positions_for_scenario(cfg, sim_tmp.floor, sim_tmp.nav, sc_key, seed)
@@ -340,12 +342,15 @@ def render_single_video(args) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Run 6 scenarios x 2 gate modes x 5 seeds + 12 MP4 videos")
     ap.add_argument("--seeds", type=int, default=5, help="number of seeds per scenario/mode (default: 5)")
+    ap.add_argument("--close-above", type=float, default=Config().gate.close_above,
+                    help="density threshold (people/m2) to turn sign RED")
     ap.add_argument("--out", default=os.path.join(BASE, "results", "benchmark"),
                     help="output folder for CSV, JSON, and MP4 files")
     ap.add_argument("--workers", type=int, default=min(6, os.cpu_count() or 4))
     ap.add_argument("--fps", type=int, default=10)
     ap.add_argument("--dpi", type=int, default=80)
     ap.add_argument("--skip-videos", action="store_true")
+    ap.add_argument("--only-videos", action="store_true", help="only render the seed-0 MP4 videos")
     args = ap.parse_args()
 
     runs_dir = os.path.join(args.out, "runs")
@@ -355,49 +360,50 @@ def main() -> int:
 
     Simulation(Config(), BASE, initial_positions=np.zeros((1, 2)), verbose=False)
 
-    sim_tasks = [
-        (sc_key, gate_key, seed, runs_dir)
-        for sc_key in SCENARIOS
-        for gate_key in GATE_MODES
-        for seed in range(args.seeds)
-    ]
+    if not args.only_videos:
+        sim_tasks = [
+            (sc_key, gate_key, seed, runs_dir, args.close_above)
+            for sc_key in SCENARIOS
+            for gate_key in GATE_MODES
+            for seed in range(args.seeds)
+        ]
 
-    print(f"Running {len(sim_tasks)} simulations ({len(SCENARIOS)} scenarios x 2 gate states x {args.seeds} seeds)...")
-    t0 = time.time()
-    rows = []
-    with ProcessPoolExecutor(max_workers=args.workers) as ex:
-        for i, r in enumerate(ex.map(run_single_sim, sim_tasks), 1):
-            rows.append(r)
-            print(f"  [{i:2d}/{len(sim_tasks)}] {r['scenario']:23s} | {r['gate_mode']:18s} | "
-                  f"seed {r['seed']} (N={r['n_agents']:3d}) -> TET={r['TET']:5.2f}s, "
-                  f"AET={r['AET']:5.2f}s, TPID={r['TPID']:3d}, closures={r['closures']}", flush=True)
+        print(f"Running {len(sim_tasks)} simulations ({len(SCENARIOS)} scenarios x 2 gate states x {args.seeds} seeds)...")
+        t0 = time.time()
+        rows = []
+        with ProcessPoolExecutor(max_workers=args.workers) as ex:
+            for i, r in enumerate(ex.map(run_single_sim, sim_tasks), 1):
+                rows.append(r)
+                print(f"  [{i:2d}/{len(sim_tasks)}] {r['scenario']:23s} | {r['gate_mode']:18s} | "
+                      f"seed {r['seed']} (N={r['n_agents']:3d}) -> TET={r['TET']:5.2f}s, "
+                      f"AET={r['AET']:5.2f}s, TPID={r['TPID']:3d}, closures={r['closures']}", flush=True)
 
-    summary_csv = os.path.join(args.out, "all_runs_summary.csv")
-    with open(summary_csv, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-        w.writeheader()
-        w.writerows(rows)
+        summary_csv = os.path.join(args.out, "all_runs_summary.csv")
+        with open(summary_csv, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            w.writeheader()
+            w.writerows(rows)
 
-    print("\n" + "=" * 102)
-    print(f"{'Scenario':48s} | {'With smart exit':24s} | {'Without smart exit':24s}")
-    print("-" * 102)
-    for sc_key, sc_meta in SCENARIOS.items():
-        r_with = [r for r in rows if r["scenario"] == sc_key and r["gate_mode"] == "with_smart_exit"]
-        r_without = [r for r in rows if r["scenario"] == sc_key and r["gate_mode"] == "without_smart_exit"]
+        print("\n" + "=" * 102)
+        print(f"{'Scenario':48s} | {'With smart exit':24s} | {'Without smart exit':24s}")
+        print("-" * 102)
+        for sc_key, sc_meta in SCENARIOS.items():
+            r_with = [r for r in rows if r["scenario"] == sc_key and r["gate_mode"] == "with_smart_exit"]
+            r_without = [r for r in rows if r["scenario"] == sc_key and r["gate_mode"] == "without_smart_exit"]
 
-        def fmt_cell(rl):
-            tet_m = st.mean(r["TET"] for r in rl)
-            aet_m = st.mean(r["AET"] for r in rl)
-            tpid_m = st.mean(r["TPID"] for r in rl)
-            return f"TET: {tet_m:5.2f}s, AET: {aet_m:5.2f}s, TPID: {tpid_m:4.1f}"
+            def fmt_cell(rl):
+                tet_m = st.mean(r["TET"] for r in rl)
+                aet_m = st.mean(r["AET"] for r in rl)
+                tpid_m = st.mean(r["TPID"] for r in rl)
+                return f"TET: {tet_m:5.2f}s, AET: {aet_m:5.2f}s, TPID: {tpid_m:4.1f}"
 
-        print(f"{sc_meta['title']:48s} | {fmt_cell(r_with)} | {fmt_cell(r_without)}")
-    print("=" * 102)
-    print(f"Saved {len(rows)} CSV + {len(rows)} JSON files in: {runs_dir} (elapsed {time.time() - t0:.1f}s)")
+            print(f"{sc_meta['title']:48s} | {fmt_cell(r_with)} | {fmt_cell(r_without)}")
+        print("=" * 102)
+        print(f"Saved {len(rows)} CSV + {len(rows)} JSON files in: {runs_dir} (elapsed {time.time() - t0:.1f}s)")
 
     if not args.skip_videos:
         video_tasks = [
-            (sc_key, gate_key, 0, video_dir, args.fps, args.dpi)
+            (sc_key, gate_key, 0, video_dir, args.fps, args.dpi, args.close_above)
             for sc_key in SCENARIOS
             for gate_key in GATE_MODES
         ]
